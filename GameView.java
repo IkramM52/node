@@ -5,6 +5,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Paint.Style;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -16,16 +17,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private Thread thread;
     private boolean running = false;
 
-    // Map
     private final int mapWidth = 2000;
     private final int mapHeight = 2000;
 
-    // Kamera (viewport)
     private float cameraX = 0;
     private float cameraY = 0;
     private int screenW, screenH;
 
-    // Player
     private float playerX = 100, playerY = 100;
     private final int blockSize = 100;
     private final Paint paint = new Paint();
@@ -36,20 +34,50 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private long playerLastHitTime = 0;
     private long playerStunUntil = 0;
 
-    // Player skill charge
+    // Skill charge
     private boolean playerSkillActive = false;
     private float playerSkillDirX = 0, playerSkillDirY = 0;
     private int playerSkillTarget = -1;
     private long playerSkillCDUntil = 0;
 
-    // Player skill jump
+    // Skill jump
     private boolean playerJumpActive = false;
     private float playerJumpTargetX = 0, playerJumpTargetY = 0;
     private long playerJumpCDUntil = 0;
-    private static final long JUMP_CD = 60000; // 60 detik
+    private static final long JUMP_CD = 60000;
     private static final float JUMP_RANGE = 650f;
-    private static final float JUMP_AOE = 5 * 100f; // 5 blok, 500px
-    private static final long JUMP_STUN = 2000; // 2 detik
+    private static final float JUMP_AOE = 5 * 100f;
+    private static final long JUMP_STUN = 2000;
+
+    private long playerShadowUntil = 0;
+
+    // Skill chain
+    private long playerExplodeCDUntil = 0;
+    private boolean explodeButtonPressed = false;
+    private float explodeBtnX, explodeBtnY, explodeBtnR;
+    private boolean playerChainAttackActive = false;
+    private int playerChainCount = 0;
+    private boolean[] playerChainAttacked = new boolean[21];
+    private static final long EXPLODE_CD = 40000;
+    private static final float EXPLODE_CHAIN_RANGE = 700f;
+    private static final long EXPLODE_CHAIN_STUN = 3000;
+    private static final int EXPLODE_CHAIN_DMG = 10;
+    private static final int EXPLODE_CHAIN_KNOCKBACK = 100;
+    private static final int EXPLODE_CHAIN_REPEAT = 3;
+
+    // Skill missile
+    private long playerMissileCDUntil = 0;
+    private boolean missileButtonPressed = false;
+    private float missileBtnX, missileBtnY, missileBtnR;
+    private boolean missileActive = false;
+    private float missileX, missileY;
+    private int missileTargetIdx = -1;
+    private float missileSpeed = 35f;
+    private boolean missileIsPlayer = true;
+    private static final long MISSILE_CD = 60000;
+    private static final float MISSILE_SEARCH_RANGE = 1500f;
+    private static final int MISSILE_DMG = 20;
+    private static final long MISSILE_STUN = 2000;
 
     // NPCs
     private static final int NPC_COUNT = 20;
@@ -66,38 +94,46 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     private long[] npcLastHitTime = new long[NPC_COUNT];
     private boolean[] npcAlive = new boolean[NPC_COUNT];
     private long[] npcStunUntil = new long[NPC_COUNT];
+    private long[] npcShadowUntil = new long[NPC_COUNT];
 
-    // NPC charge skill
+    // NPC skills
     private boolean[] npcSkillActive = new boolean[NPC_COUNT];
     private float[] npcSkillDirX = new float[NPC_COUNT];
     private float[] npcSkillDirY = new float[NPC_COUNT];
     private long[] npcSkillCDUntil = new long[NPC_COUNT];
     private int[] npcSkillTarget = new int[NPC_COUNT];
 
-    // NPC jump skill
     private boolean[] npcJumpActive = new boolean[NPC_COUNT];
     private float[] npcJumpTargetX = new float[NPC_COUNT];
     private float[] npcJumpTargetY = new float[NPC_COUNT];
     private long[] npcJumpCDUntil = new long[NPC_COUNT];
 
-    // Skill & stun constants
-    private static final long STUN_TIME = 700; // ms, stun biasa
-    private static final long SKILL_CD = 30000; // ms, CD skill charge player & npc = 30 detik
+    private long[] npcExplodeCDUntil = new long[NPC_COUNT];
+    private boolean[] npcChainAttackActive = new boolean[NPC_COUNT];
+    private int[] npcChainCount = new int[NPC_COUNT];
+    private boolean[][] npcChainAttacked = new boolean[NPC_COUNT][21];
+
+    private long[] npcMissileCDUntil = new long[NPC_COUNT];
+    private boolean[] npcMissileActive = new boolean[NPC_COUNT];
+    private float[] npcMissileX = new float[NPC_COUNT];
+    private float[] npcMissileY = new float[NPC_COUNT];
+    private int[] npcMissileTargetIdx = new int[NPC_COUNT];
+    private boolean[] npcMissileIsPlayerTarget = new boolean[NPC_COUNT];
+
+    private static final long STUN_TIME = 700;
+    private static final long SKILL_CD = 30000;
     private static final float CHARGE_RANGE = 350f;
     private static final float CHARGE_SPEED = 60f;
-    private static final long HIT_COOLDOWN = 300; // ms
+    private static final long HIT_COOLDOWN = 300;
 
     private final Random random = new Random();
 
-    // Tombol skill player (posisi & status)
     private boolean skillButtonPressed = false;
     private float skillBtnX, skillBtnY, skillBtnR;
 
-    // Tombol skill jump
     private boolean jumpButtonPressed = false;
     private float jumpBtnX, jumpBtnY, jumpBtnR;
 
-    // Activity reference for finishing app on HP=0
     private Activity activity;
 
     public GameView(Context context) {
@@ -106,7 +142,6 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         getHolder().addCallback(this);
         setFocusable(true);
 
-        // Inisialisasi NPC
         for (int i = 0; i < NPC_COUNT; i++) {
             npcX[i] = 300 + (i % 5) * 300;
             npcY[i] = 300 + (i / 5) * 300;
@@ -114,6 +149,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             npcMaxHP[i] = 100;
             npcAlive[i] = true;
             npcSkillTarget[i] = -1;
+            npcShadowUntil[i] = 0;
         }
     }
 
@@ -134,12 +170,18 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                     if (screenW == 0 || screenH == 0) {
                         screenW = canvas.getWidth();
                         screenH = canvas.getHeight();
-                        skillBtnR = 100;
-                        skillBtnX = screenW - skillBtnR - 40;
-                        skillBtnY = screenH - skillBtnR - 40;
-                        jumpBtnR = 100;
-                        jumpBtnX = screenW - jumpBtnR - 40 - 240;
-                        jumpBtnY = screenH - jumpBtnR - 40;
+                        skillBtnR = 70;
+                        skillBtnX = screenW - skillBtnR - 30;
+                        skillBtnY = 30 + skillBtnR;
+                        jumpBtnR = 60;
+                        jumpBtnX = screenW - jumpBtnR - 30;
+                        jumpBtnY = skillBtnY + skillBtnR + 30 + jumpBtnR;
+                        explodeBtnR = 55;
+                        explodeBtnX = screenW - explodeBtnR - 30;
+                        explodeBtnY = jumpBtnY + jumpBtnR + 30 + explodeBtnR;
+                        missileBtnR = 55;
+                        missileBtnX = screenW - missileBtnR - 30;
+                        missileBtnY = explodeBtnY + explodeBtnR + 30 + missileBtnR;
                     }
                     update();
                     drawGame(canvas);
@@ -152,144 +194,249 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void update() {
-		int speed = 20;
-		boolean playerMoving = false;
-		long now = System.currentTimeMillis();
+        int speed = 20;
+        boolean playerMoving = false;
+        long now = System.currentTimeMillis();
 
-		// PLAYER: Movement, stun, skill charge
-		if (now < playerStunUntil) {
-			// Player stun, tidak bisa bergerak
-		} else if (playerSkillActive) {
-			playerX += playerSkillDirX * CHARGE_SPEED;
-			playerY += playerSkillDirY * CHARGE_SPEED;
-			int i = playerSkillTarget;
-			if (i >= 0 && i < NPC_COUNT && npcAlive[i] && checkOverlap(playerX, playerY, npcX[i], npcY[i])) {
-				npcHP[i] -= 3;
-				npcStunUntil[i] = now + STUN_TIME;
-				if (npcHP[i] <= 0) npcAlive[i] = false;
-				playerSkillCDUntil = now + SKILL_CD;
-				playerSkillActive = false;
-				playerSkillTarget = -1;
-			}
-		} else if (playerJumpActive) {
-			playerX = playerJumpTargetX;
-			playerY = playerJumpTargetY;
-			// Efek lompat: stun, terpental, dan -15 HP untuk semua unit dalam 5 blok dari titik lompat (termasuk player)
-			for (int i = 0; i < NPC_COUNT; i++) {
-				if (!npcAlive[i]) continue;
-				float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
-				float dist = (float)Math.sqrt(dx*dx + dy*dy);
-				if (dist <= JUMP_AOE) {
-					npcHP[i] -= 15;
-					npcStunUntil[i] = now + JUMP_STUN;
-					// Knockback/terpental ke luar dari pusat lompat
-					float kx = dx / (dist == 0 ? 1 : dist);
-					float ky = dy / (dist == 0 ? 1 : dist);
-					float strength = 60;
-					npcKnockbackX[i] += kx * strength;
-					npcKnockbackY[i] += ky * strength;
-					if (npcHP[i] <= 0) npcAlive[i] = false;
-				}
-			}
-			// Player sendiri juga kena jika ada unit lain sangat dekat (opsional, sesuai permintaan)
-			// Kalau mau player juga stun, hp, dan terpental jika dia sendiri dalam radius
-			// playerHP -= 15; playerStunUntil = now + JUMP_STUN;
-			playerJumpCDUntil = now + JUMP_CD;
-			playerJumpActive = false;
-		} else {
-			if (upPressed)   { playerY -= speed; playerMoving = true; }
-			if (downPressed) { playerY += speed; playerMoving = true; }
-			if (leftPressed) { playerX -= speed; playerMoving = true; }
-			if (rightPressed){ playerX += speed; playerMoving = true; }
-		}
-
-		playerX = Math.max(0, Math.min(playerX, mapWidth - blockSize));
-		playerY = Math.max(0, Math.min(playerY, mapHeight - blockSize));
-
-		// --- NPC: Movement, stun, skills, and mutual hunting ---
-		for (int i = 0; i < NPC_COUNT; i++) {
-			if (!npcAlive[i]) continue;
-			// Jump skill
-			if (npcJumpActive[i]) {
-				npcX[i] = npcJumpTargetX[i];
-				npcY[i] = npcJumpTargetY[i];
-				// Efek lompat: stun, terpental, dan -15 HP untuk semua unit dalam 5 blok (termasuk player dan NPC lain, kecuali pengguna skill)
-				// Player
-				float dx = playerX - npcX[i], dy = playerY - npcY[i];
-				float dist = (float)Math.sqrt(dx*dx + dy*dy);
-				if (dist <= JUMP_AOE) {
-					playerHP -= 15;
-					playerStunUntil = now + JUMP_STUN;
-					float kx = dx / (dist == 0 ? 1 : dist);
-					float ky = dy / (dist == 0 ? 1 : dist);
-					float strength = 60;
-					playerKnockbackX += kx * strength;
-					playerKnockbackY += ky * strength;
-				}
-				// NPC lain
-				for (int j = 0; j < NPC_COUNT; j++) {
-					if (j == i || !npcAlive[j]) continue;
-					float dx2 = npcX[j] - npcX[i], dy2 = npcY[j] - npcY[i];
-					float dist2 = (float)Math.sqrt(dx2*dx2 + dy2*dy2);
-					if (dist2 <= JUMP_AOE) {
-						npcHP[j] -= 15;
-						npcStunUntil[j] = now + JUMP_STUN;
-						float kx = dx2 / (dist2 == 0 ? 1 : dist2);
-						float ky = dy2 / (dist2 == 0 ? 1 : dist2);
-						float strength = 60;
-						npcKnockbackX[j] += kx * strength;
-						npcKnockbackY[j] += ky * strength;
-						if (npcHP[j] <= 0) npcAlive[j] = false;
-					}
-				}
-				npcJumpCDUntil[i] = now + JUMP_CD;
-				npcJumpActive[i] = false;
-				continue;
-			}
-            if (now < npcStunUntil[i]) {
-                npcDx[i] = 0; npcDy[i] = 0;
-            } else if (npcSkillActive[i]) {
-                npcX[i] += npcSkillDirX[i] * CHARGE_SPEED;
-                npcY[i] += npcSkillDirY[i] * CHARGE_SPEED;
-                // Charge hit player
-                if (checkOverlap(playerX, playerY, npcX[i], npcY[i])) {
-                    playerHP -= 3;
-                    playerStunUntil = now + STUN_TIME;
-                    npcSkillCDUntil[i] = now + SKILL_CD;
-                    npcSkillActive[i] = false;
+        // PLAYER: Movement, stun, skill charge/jump/chain/missile
+        if (now < playerStunUntil) {
+            // Stun
+        } else if (playerSkillActive) {
+            playerX += playerSkillDirX * CHARGE_SPEED;
+            playerY += playerSkillDirY * CHARGE_SPEED;
+            int i = playerSkillTarget;
+            if (i >= 0 && i < NPC_COUNT && npcAlive[i] && checkOverlap(playerX, playerY, npcX[i], npcY[i])) {
+                npcHP[i] -= 3;
+                npcStunUntil[i] = now + STUN_TIME;
+                if (npcHP[i] <= 0) npcAlive[i] = false;
+                playerSkillCDUntil = now + SKILL_CD;
+                playerSkillActive = false;
+                playerSkillTarget = -1;
+            }
+        } else if (playerJumpActive) {
+            playerX = playerJumpTargetX;
+            playerY = playerJumpTargetY;
+            for (int i = 0; i < NPC_COUNT; i++) {
+                if (!npcAlive[i]) continue;
+                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                if (dist <= JUMP_AOE) {
+                    npcHP[i] -= 15;
+                    npcStunUntil[i] = now + JUMP_STUN;
+                    float kx = dx / (dist == 0 ? 1 : dist);
+                    float ky = dy / (dist == 0 ? 1 : dist);
+                    float strength = 60;
+                    npcKnockbackX[i] += kx * strength;
+                    npcKnockbackY[i] += ky * strength;
+                    if (npcHP[i] <= 0) npcAlive[i] = false;
                 }
-                // Charge hit NPC lain
-                for (int j = 0; j < NPC_COUNT; j++) {
-                    if (j == i || !npcAlive[j]) continue;
-                    if (checkOverlap(npcX[i], npcY[i], npcX[j], npcY[j])) {
-                        npcHP[j] -= 3;
-                        npcStunUntil[j] = now + STUN_TIME;
-                        if (npcHP[j] <= 0) npcAlive[j] = false;
-                        npcSkillCDUntil[i] = now + SKILL_CD;
-                        npcSkillActive[i] = false;
-                    }
+            }
+            playerJumpCDUntil = now + JUMP_CD;
+            playerJumpActive = false;
+        } else if (playerChainAttackActive) {
+            int nextIdx = getClosestNpcIdx(playerX, playerY, playerChainAttacked);
+            if (nextIdx != -1) {
+                float dx = npcX[nextIdx] - playerX, dy = npcY[nextIdx] - playerY;
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                float nearDist = blockSize * 1.2f;
+                playerX = npcX[nextIdx] - (dx / (dist == 0 ? 1 : dist)) * nearDist;
+                playerY = npcY[nextIdx] - (dy / (dist == 0 ? 1 : dist)) * nearDist;
+                npcHP[nextIdx] -= EXPLODE_CHAIN_DMG;
+                npcStunUntil[nextIdx] = now + EXPLODE_CHAIN_STUN;
+                npcKnockbackX[nextIdx] += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                npcKnockbackY[nextIdx] += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                npcShadowUntil[nextIdx] = now + 600;
+                if (npcHP[nextIdx] <= 0) npcAlive[nextIdx] = false;
+                playerShadowUntil = now + 600;
+                playerChainAttacked[nextIdx] = true;
+                playerChainCount++;
+            }
+            if (nextIdx == -1 || playerChainCount >= EXPLODE_CHAIN_REPEAT) {
+                playerChainAttackActive = false;
+            }
+        } else {
+            if (upPressed)   { playerY -= speed; playerMoving = true; }
+            if (downPressed) { playerY += speed; playerMoving = true; }
+            if (leftPressed) { playerX -= speed; playerMoving = true; }
+            if (rightPressed){ playerX += speed; playerMoving = true; }
+        }
+
+        playerX = Math.max(0, Math.min(playerX, mapWidth - blockSize));
+        playerY = Math.max(0, Math.min(playerY, mapHeight - blockSize));
+
+        // PLAYER MISSILE
+        if (missileButtonPressed && now > playerMissileCDUntil && !missileActive) {
+            float bestDist = Float.MAX_VALUE;
+            int bestIdx = -1;
+            for (int i = 0; i < NPC_COUNT; i++) {
+                if (!npcAlive[i]) continue;
+                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                if (dist < bestDist && dist < MISSILE_SEARCH_RANGE) {
+                    bestDist = dist; bestIdx = i;
+                }
+            }
+            if (bestIdx != -1) {
+                missileActive = true;
+                missileX = playerX + blockSize/2f;
+                missileY = playerY + blockSize/2f;
+                missileTargetIdx = bestIdx;
+                missileIsPlayer = true;
+                playerMissileCDUntil = now + MISSILE_CD;
+            }
+            missileButtonPressed = false;
+        }
+        if (missileActive && missileTargetIdx != -1 && missileIsPlayer) {
+            if (missileTargetIdx >= 0 && missileTargetIdx < NPC_COUNT && npcAlive[missileTargetIdx]) {
+                float tx = npcX[missileTargetIdx] + blockSize/2f;
+                float ty = npcY[missileTargetIdx] + blockSize/2f;
+                float dx = tx - missileX, dy = ty - missileY;
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                if (dist > 10) {
+                    float vx = dx / dist * missileSpeed;
+                    float vy = dy / dist * missileSpeed;
+                    missileX += vx;
+                    missileY += vy;
+                }
+                if (dist < blockSize/1.5f) {
+                    npcHP[missileTargetIdx] -= MISSILE_DMG;
+                    npcStunUntil[missileTargetIdx] = now + MISSILE_STUN;
+                    if (npcHP[missileTargetIdx] <= 0) npcAlive[missileTargetIdx] = false;
+                    missileActive = false;
                 }
             } else {
-                // AI: cari target terdekat (player atau NPC lain)
+                missileActive = false;
+            }
+        }
+
+        // ================= NPC =================
+        for (int i = 0; i < NPC_COUNT; i++) {
+            if (!npcAlive[i]) continue;
+
+            // NPC missile
+            if (!npcMissileActive[i] && now > npcMissileCDUntil[i]) {
+                boolean targetPlayer = false;
+                int bestIdx = -1;
+                float bestDist = Float.MAX_VALUE;
+                float dxp = playerX - npcX[i], dyp = playerY - npcY[i];
+                float distp = (float)Math.sqrt(dxp*dxp + dyp*dyp);
+                if (playerHP > 0 && distp < MISSILE_SEARCH_RANGE) { bestDist = distp; targetPlayer = true; }
+                for (int j = 0; j < NPC_COUNT; j++) {
+                    if (j == i || !npcAlive[j]) continue;
+                    float dx2 = npcX[j] - npcX[i], dy2 = npcY[j] - npcY[i];
+                    float dist2 = (float)Math.sqrt(dx2*dx2 + dy2*dy2);
+                    if (dist2 < bestDist && dist2 < MISSILE_SEARCH_RANGE) {
+                        bestDist = dist2;
+                        targetPlayer = false;
+                        bestIdx = j;
+                    }
+                }
+                if (targetPlayer || bestIdx != -1) {
+                    npcMissileActive[i] = true;
+                    npcMissileX[i] = npcX[i] + blockSize/2f;
+                    npcMissileY[i] = npcY[i] + blockSize/2f;
+                    npcMissileTargetIdx[i] = targetPlayer ? -1 : bestIdx;
+                    npcMissileIsPlayerTarget[i] = targetPlayer;
+                    npcMissileCDUntil[i] = now + MISSILE_CD;
+                }
+            }
+            if (npcMissileActive[i]) {
+                float tx, ty;
+                if (npcMissileIsPlayerTarget[i]) {
+                    tx = playerX + blockSize/2f; ty = playerY + blockSize/2f;
+                } else if (npcMissileTargetIdx[i] >= 0 && npcMissileTargetIdx[i] < NPC_COUNT && npcAlive[npcMissileTargetIdx[i]]) {
+                    tx = npcX[npcMissileTargetIdx[i]] + blockSize/2f; ty = npcY[npcMissileTargetIdx[i]] + blockSize/2f;
+                } else {
+                    npcMissileActive[i] = false;
+					continue;
+                }
+                if (npcMissileActive[i]) {
+                    float dx = tx - npcMissileX[i], dy = ty - npcMissileY[i];
+                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                    if (dist > 10) {
+                        float vx = dx / dist * missileSpeed;
+                        float vy = dy / dist * missileSpeed;
+                        npcMissileX[i] += vx;
+                        npcMissileY[i] += vy;
+                    }
+                    if (dist < blockSize/1.5f) {
+                        if (npcMissileIsPlayerTarget[i]) {
+                            playerHP -= MISSILE_DMG;
+                            playerStunUntil = now + MISSILE_STUN;
+                        } else {
+                            npcHP[npcMissileTargetIdx[i]] -= MISSILE_DMG;
+                            npcStunUntil[npcMissileTargetIdx[i]] = now + MISSILE_STUN;
+                            if (npcHP[npcMissileTargetIdx[i]] <= 0) npcAlive[npcMissileTargetIdx[i]] = false;
+                        }
+                        npcMissileActive[i] = false;
+                    }
+                }
+            }
+
+            // NPC chain attack
+            if (npcChainAttackActive[i]) {
+                int nextIdx = getClosestNpcIdx(npcX[i], npcY[i], npcChainAttacked[i], i);
+                if (nextIdx == NPC_COUNT) {
+                    float dx = playerX - npcX[i], dy = playerY - npcY[i];
+                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                    float nearDist = blockSize * 1.2f;
+                    npcX[i] = playerX - (dx / (dist == 0 ? 1 : dist)) * nearDist;
+                    npcY[i] = playerY - (dy / (dist == 0 ? 1 : dist)) * nearDist;
+                    playerHP -= EXPLODE_CHAIN_DMG;
+                    playerStunUntil = now + EXPLODE_CHAIN_STUN;
+                    playerKnockbackX += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                    playerKnockbackY += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                    playerShadowUntil = now + 600;
+                    npcChainAttacked[i][NPC_COUNT] = true;
+                    npcChainCount[i]++;
+                } else if (nextIdx != -1) {
+                    float dx = npcX[nextIdx] - npcX[i], dy = npcY[nextIdx] - npcY[i];
+                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                    float nearDist = blockSize * 1.2f;
+                    npcX[i] = npcX[nextIdx] - (dx / (dist == 0 ? 1 : dist)) * nearDist;
+                    npcY[i] = npcY[nextIdx] - (dy / (dist == 0 ? 1 : dist)) * nearDist;
+                    npcHP[nextIdx] -= EXPLODE_CHAIN_DMG;
+                    npcStunUntil[nextIdx] = now + EXPLODE_CHAIN_STUN;
+                    npcKnockbackX[nextIdx] += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                    npcKnockbackY[nextIdx] += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
+                    npcShadowUntil[nextIdx] = now + 600;
+                    if (npcHP[nextIdx] <= 0) npcAlive[nextIdx] = false;
+                    npcChainAttacked[i][nextIdx] = true;
+                    npcChainCount[i]++;
+                }
+                if ((nextIdx == -1 || npcChainCount[i] >= EXPLODE_CHAIN_REPEAT)) {
+                    npcChainAttackActive[i] = false;
+                }
+            }
+
+            // NPC stun
+            if (now < npcStunUntil[i]) {
+                npcDx[i] = 0; npcDy[i] = 0;
+            } else {
+                // === Movement/AI Logic: Cegah saling menumpuk ===
                 float bestDist = Float.MAX_VALUE;
                 float tx = -1, ty = -1;
                 boolean isPlayer = false;
-                // Cari player
                 float dxp = playerX - npcX[i], dyp = playerY - npcY[i];
                 float distp = (float)Math.sqrt(dxp*dxp + dyp*dyp);
                 if (distp < bestDist && playerHP > 0) {
                     bestDist = distp; tx = playerX; ty = playerY; isPlayer = true;
                 }
-                // Cari NPC lain
                 for (int j = 0; j < NPC_COUNT; j++) {
                     if (j == i || !npcAlive[j]) continue;
                     float dxn = npcX[j] - npcX[i], dyn = npcY[j] - npcY[i];
                     float distn = (float)Math.sqrt(dxn*dxn + dyn*dyn);
+                    // Jangan mendekat terlalu dekat dengan NPC lain (anti merge/menumpuk)
+                    if (distn < blockSize * 0.95f) {
+                        float nx = (npcX[i] - npcX[j]) / (distn == 0 ? 1 : distn);
+                        float ny = (npcY[i] - npcY[j]) / (distn == 0 ? 1 : distn);
+                        npcX[i] += nx * 6.5f;
+                        npcY[i] += ny * 6.5f;
+                    }
                     if (distn < bestDist) {
                         bestDist = distn; tx = npcX[j]; ty = npcY[j]; isPlayer = false;
                     }
                 }
-                // Kejar target terdekat
                 if (bestDist < 600 && now > npcStunUntil[i]) {
                     float dx = tx - npcX[i], dy = ty - npcY[i];
                     if (Math.abs(dx) > 20) npcDx[i] = (int)Math.signum(dx);
@@ -311,70 +458,31 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             }
         }
 
-        // --- DORONG & HP antar unit ---
+        // Chain attack NPC trigger
         for (int i = 0; i < NPC_COUNT; i++) {
             if (!npcAlive[i]) continue;
-            // NPC-NPC dorong & HP (pakai cooldown per NPC)
-            for (int j = i + 1; j < NPC_COUNT; j++) {
-                if (!npcAlive[j]) continue;
-                if (checkOverlap(npcX[i], npcY[i], npcX[j], npcY[j])) {
-                    dorongUnit(i, j, npcX, npcY, npcKnockbackX, npcKnockbackY);
-                    boolean aMoving = (npcDx[i] != 0 || npcDy[i] != 0);
-                    boolean bMoving = (npcDx[j] != 0 || npcDy[j] != 0);
-                    if (now - npcLastHitTime[j] >= HIT_COOLDOWN && aMoving && !bMoving) {
-                        npcHP[j]--;
-                        npcLastHitTime[j] = now;
-                        if (npcHP[j] <= 0) npcAlive[j] = false;
-                        npcStunUntil[j] = now + STUN_TIME;
-                    }
-                    else if (now - npcLastHitTime[i] >= HIT_COOLDOWN && !aMoving && bMoving) {
-                        npcHP[i]--;
-                        npcLastHitTime[i] = now;
-                        if (npcHP[i] <= 0) npcAlive[i] = false;
-                        npcStunUntil[i] = now + STUN_TIME;
-                    }
+            if (!npcChainAttackActive[i] && now > npcExplodeCDUntil[i] && now > npcStunUntil[i]) {
+                boolean adaTargetDekat = false;
+                float dx = playerX - npcX[i], dy = playerY - npcY[i];
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                if (npcAlive[i] && playerHP > 0 && dist <= EXPLODE_CHAIN_RANGE) adaTargetDekat = true;
+                for (int j = 0; j < NPC_COUNT; j++) {
+                    if (j == i || !npcAlive[j]) continue;
+                    float dx2 = npcX[j] - npcX[i], dy2 = npcY[j] - npcY[i];
+                    float dist2 = (float)Math.sqrt(dx2*dx2 + dy2*dy2);
+                    if (dist2 <= EXPLODE_CHAIN_RANGE) { adaTargetDekat = true; break; }
                 }
-            }
-            // Player <-> NPC
-            if (checkOverlap(playerX, playerY, npcX[i], npcY[i])) {
-                boolean npcMoving = (npcDx[i] != 0 || npcDy[i] != 0);
-                if (now - playerLastHitTime >= HIT_COOLDOWN && !playerMoving && npcMoving && !playerSkillActive) {
-                    playerHP--;
-                    playerLastHitTime = now;
-                    playerStunUntil = now + STUN_TIME;
-                } else if (now - npcLastHitTime[i] >= HIT_COOLDOWN && playerMoving && !npcMoving && !npcSkillActive[i]) {
-                    npcHP[i]--;
-                    npcLastHitTime[i] = now;
-                    if (npcHP[i] <= 0) npcAlive[i] = false;
-                    npcStunUntil[i] = now + STUN_TIME;
+                if (adaTargetDekat && random.nextFloat() < 0.01f) {
+                    for (int j = 0; j <= NPC_COUNT; j++) npcChainAttacked[i][j] = false;
+                    npcChainAttackActive[i] = true;
+                    npcChainCount[i] = 0;
+                    npcExplodeCDUntil[i] = now + EXPLODE_CD;
+                    npcHP[i] -= 10;
                 }
-                float dx = playerX - npcX[i];
-                float dy = playerY - npcY[i];
-                float dist = (float)Math.sqrt(dx*dx+dy*dy);
-                if (dist == 0) dist = 1;
-                float nx = dx / dist, ny = dy / dist;
-                float strength = 20;
-                playerKnockbackX += nx * strength;
-                playerKnockbackY += ny * strength;
-                npcKnockbackX[i] -= nx * strength;
-                npcKnockbackY[i] -= ny * strength;
             }
         }
 
-        playerX += playerKnockbackX; playerY += playerKnockbackY;
-        playerKnockbackX *= 0.8f; playerKnockbackY *= 0.8f;
-        if (Math.abs(playerKnockbackX) < 0.1f) playerKnockbackX = 0;
-        if (Math.abs(playerKnockbackY) < 0.1f) playerKnockbackY = 0;
-
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (!npcAlive[i]) continue;
-            npcX[i] += npcKnockbackX[i]; npcY[i] += npcKnockbackY[i];
-            npcKnockbackX[i] *= 0.8f; npcKnockbackY[i] *= 0.8f;
-            if (Math.abs(npcKnockbackX[i]) < 0.1f) npcKnockbackX[i] = 0;
-            if (Math.abs(npcKnockbackY[i]) < 0.1f) npcKnockbackY[i] = 0;
-        }
-
-        // Aktifkan skill charge player jika tombol ditekan, tidak sedang stun, tidak sedang charge, tidak cooldown
+        // Skill charge/jump/chain trigger
         if (skillButtonPressed && !playerSkillActive && now > playerSkillCDUntil && now > playerStunUntil && !playerJumpActive) {
             for (int i = 0; i < NPC_COUNT; i++) {
                 if (!npcAlive[i]) continue;
@@ -389,8 +497,6 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
                 }
             }
         }
-
-        // Aktifkan skill jump player jika tombol jump ditekan
         if (jumpButtonPressed && !playerJumpActive && now > playerJumpCDUntil && now > playerStunUntil && !playerSkillActive) {
             float bestDist = Float.MAX_VALUE;
             float tx = playerX, ty = playerY;
@@ -414,42 +520,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             playerJumpTargetY = ty;
             playerJumpActive = true;
         }
-
-        // Aktifkan skill NPC: charge/jump otomatis
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (!npcAlive[i] || now < npcSkillCDUntil[i] || npcSkillActive[i] || now < npcStunUntil[i] || npcJumpActive[i]) continue;
-            // Cari target terdekat (player/NPC lain)
-            float bestDist = Float.MAX_VALUE;
-            float tx = -1, ty = -1;
-            boolean isPlayer = false;
-            float dxp = playerX - npcX[i], dyp = playerY - npcY[i];
-            float distp = (float)Math.sqrt(dxp*dxp + dyp*dyp);
-            if (distp < bestDist && playerHP > 0) {
-                bestDist = distp; tx = playerX; ty = playerY; isPlayer = true;
-            }
-            for (int j = 0; j < NPC_COUNT; j++) {
-                if (j == i || !npcAlive[j]) continue;
-                float dxn = npcX[j] - npcX[i], dyn = npcY[j] - npcY[i];
-                float distn = (float)Math.sqrt(dxn*dxn + dyn*dyn);
-                if (distn < bestDist) {
-                    bestDist = distn; tx = npcX[j]; ty = npcY[j]; isPlayer = false;
-                }
-            }
-            float dx = tx - npcX[i], dy = ty - npcY[i];
-            // Prioritas jump jika dalam range
-            if (now > npcJumpCDUntil[i] && bestDist < JUMP_RANGE && random.nextFloat() < 0.01f) {
-                npcJumpTargetX[i] = tx;
-                npcJumpTargetY[i] = ty;
-                npcJumpActive[i] = true;
-            } else if (bestDist < CHARGE_RANGE) {
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist > 0) {
-                    npcSkillDirX[i] = dx / dist;
-                    npcSkillDirY[i] = dy / dist;
-                    npcSkillActive[i] = true;
-                    npcSkillTarget[i] = isPlayer ? -1 : getNpcIndexByPosition(tx, ty);
-                }
-            }
+        if (explodeButtonPressed && now > playerExplodeCDUntil && now > playerStunUntil) {
+            for (int i = 0; i <= NPC_COUNT; i++) playerChainAttacked[i] = false;
+            playerChainAttackActive = true;
+            playerChainCount = 0;
+            playerHP -= 10;
+            playerExplodeCDUntil = now + EXPLODE_CD;
+            explodeButtonPressed = false;
         }
 
         cameraX = playerX + blockSize/2 - screenW/2;
@@ -467,29 +544,42 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         }
     }
 
-    private int getNpcIndexByPosition(float x, float y) {
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (Math.abs(npcX[i] - x) < 0.1f && Math.abs(npcY[i] - y) < 0.1f) return i;
-        }
-        return -1;
-    }
+    // Helper functions: getClosestNpcIdx, checkOverlap, dorongUnit (implementasi tetap)
 
+    private int getClosestNpcIdx(float x, float y, boolean[] sudah, int ignoreIdx) {
+        float bestDist = Float.MAX_VALUE;
+        int bestIdx = -1;
+        for (int i = 0; i < NPC_COUNT; i++) {
+            if (i == ignoreIdx || sudah[i] || !npcAlive[i]) continue;
+            float dx = npcX[i] - x, dy = npcY[i] - y;
+            float dist = (float)Math.sqrt(dx*dx + dy*dy);
+            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) {
+                bestDist = dist; bestIdx = i;
+            }
+        }
+        if (!sudah[NPC_COUNT]) {
+            float dx = playerX - x, dy = playerY - y;
+            float dist = (float)Math.sqrt(dx*dx + dy*dy);
+            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) return NPC_COUNT;
+        }
+        return bestIdx;
+    }
+    private int getClosestNpcIdx(float x, float y, boolean[] sudah) {
+        float bestDist = Float.MAX_VALUE;
+        int bestIdx = -1;
+        for (int i = 0; i < NPC_COUNT; i++) {
+            if (sudah[i] || !npcAlive[i]) continue;
+            float dx = npcX[i] - x, dy = npcY[i] - y;
+            float dist = (float)Math.sqrt(dx*dx + dy*dy);
+            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) {
+                bestDist = dist; bestIdx = i;
+            }
+        }
+        return bestIdx;
+    }
     private boolean checkOverlap(float x1, float y1, float x2, float y2) {
         return x1 < x2 + blockSize && x1 + blockSize > x2 &&
-            y1 < y2 + blockSize && y1 + blockSize > y2;
-    }
-
-    private void dorongUnit(int i, int j, float[] xs, float[] ys, float[] kx, float[] ky) {
-        float dx = xs[i] - xs[j];
-        float dy = ys[i] - ys[j];
-        float dist = (float)Math.sqrt(dx*dx+dy*dy);
-        if (dist == 0) dist = 1;
-        float nx = dx / dist, ny = dy / dist;
-        float strength = 20;
-        kx[i] += nx * strength;
-        ky[i] += ny * strength;
-        kx[j] -= nx * strength;
-        ky[j] -= ny * strength;
+			y1 < y2 + blockSize && y1 + blockSize > y2;
     }
 
     private void drawGame(Canvas canvas) {
@@ -508,6 +598,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         for (int i = 0; i < NPC_COUNT; i++) {
             if (!npcAlive[i]) continue;
             aliveCount++;
+            if (System.currentTimeMillis() < npcShadowUntil[i]) {
+                paint.setColor(Color.BLACK);
+                paint.setStyle(Style.FILL);
+                float drawX = npcX[i] - cameraX, drawY = npcY[i] - cameraY;
+                canvas.drawRect(drawX+6, drawY+12, drawX+blockSize+6, drawY+blockSize+12, paint);
+            }
+            paint.setStyle(Style.FILL);
             paint.setColor(npcColors[i % npcColors.length]);
             float drawX = npcX[i] - cameraX, drawY = npcY[i] - cameraY;
             canvas.drawRect(drawX, drawY, drawX + blockSize, drawY + blockSize, paint);
@@ -523,6 +620,11 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
         paint.setColor(Color.GREEN);
         float pDrawX = playerX - cameraX, pDrawY = playerY - cameraY;
+        if (System.currentTimeMillis() < playerShadowUntil) {
+            paint.setColor(Color.BLACK);
+            canvas.drawRect(pDrawX+6, pDrawY+12, pDrawX + blockSize+6, pDrawY + blockSize+12, paint);
+        }
+        paint.setColor(Color.GREEN);
         canvas.drawRect(pDrawX, pDrawY, pDrawX + blockSize, pDrawY + blockSize, paint);
         float playerHpBarWidth = blockSize * ((float)playerHP / playerMaxHP);
         playerHpBarWidth = Math.max(0, Math.min(blockSize, playerHpBarWidth));
@@ -533,8 +635,21 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             canvas.drawRect(pDrawX, pDrawY, pDrawX + blockSize, pDrawY + blockSize, paint);
         }
 
+        // Draw missile player
+        if (missileActive) {
+            paint.setColor(Color.rgb(180,220,255));
+            canvas.drawRect(missileX - 18 - cameraX, missileY - 8 - cameraY, missileX + 18 - cameraX, missileY + 8 - cameraY, paint);
+        }
+        // Draw missile NPC
+        for (int i = 0; i < NPC_COUNT; i++) {
+            if (npcMissileActive[i]) {
+                paint.setColor(Color.rgb(255,180,60));
+                canvas.drawRect(npcMissileX[i] - 18 - cameraX, npcMissileY[i] - 8 - cameraY, npcMissileX[i] + 18 - cameraX, npcMissileY[i] + 8 - cameraY, paint);
+            }
+        }
+
         paint.setColor(Color.WHITE);
-        paint.setTextSize(48);
+        paint.setTextSize(44);
         paint.setTextAlign(Paint.Align.LEFT);
         canvas.drawText("NPC Alive: " + aliveCount, 32, 56, paint);
 
@@ -542,42 +657,66 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
     }
 
     private void drawButtons(Canvas canvas) {
+        long now = System.currentTimeMillis();
+        boolean skillReady = now > playerSkillCDUntil;
+        paint.setColor(skillReady ? Color.rgb(80,200,255) : Color.DKGRAY);
+        canvas.drawCircle(skillBtnX, skillBtnY, skillBtnR, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(30);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText("CHARGE", skillBtnX, skillBtnY+10, paint);
+        if (!skillReady) {
+            long msLeft = playerSkillCDUntil - now;
+            int detik = (int)(msLeft / 1000) + 1;
+            paint.setTextSize(22);
+            paint.setColor(Color.YELLOW);
+            canvas.drawText("" + detik + "s", skillBtnX, skillBtnY + 38, paint);
+        }
+        boolean jumpReady = now > playerJumpCDUntil;
+        paint.setColor(jumpReady ? Color.rgb(255,210,80) : Color.DKGRAY);
+        canvas.drawCircle(jumpBtnX, jumpBtnY, jumpBtnR, paint);
+        paint.setColor(Color.BLACK);
+        paint.setTextSize(26);
+        canvas.drawText("LOMPAT", jumpBtnX, jumpBtnY+10, paint);
+        if (!jumpReady) {
+            long msLeft = playerJumpCDUntil - now;
+            int detik = (int)(msLeft / 1000) + 1;
+            paint.setTextSize(20);
+            paint.setColor(Color.YELLOW);
+            canvas.drawText("" + detik + "s", jumpBtnX, jumpBtnY + 34, paint);
+        }
+        boolean explodeReady = now > playerExplodeCDUntil;
+        paint.setColor(explodeReady ? Color.rgb(255,80,100) : Color.DKGRAY);
+        canvas.drawCircle(explodeBtnX, explodeBtnY, explodeBtnR, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(20);
+        canvas.drawText("CHAIN", explodeBtnX, explodeBtnY+7, paint);
+        if (!explodeReady) {
+            long msLeft = playerExplodeCDUntil - now;
+            int detik = (int)(msLeft / 1000) + 1;
+            paint.setTextSize(16);
+            paint.setColor(Color.YELLOW);
+            canvas.drawText("" + detik + "s", explodeBtnX, explodeBtnY + 24, paint);
+        }
+        boolean missileReady = now > playerMissileCDUntil;
+        paint.setColor(missileReady ? Color.rgb(140,180,255) : Color.DKGRAY);
+        canvas.drawCircle(missileBtnX, missileBtnY, missileBtnR, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(17);
+        canvas.drawText("MISSILE", missileBtnX, missileBtnY+7, paint);
+        if (!missileReady) {
+            long msLeft = playerMissileCDUntil - now;
+            int detik = (int)(msLeft / 1000) + 1;
+            paint.setTextSize(14);
+            paint.setColor(Color.YELLOW);
+            canvas.drawText("" + detik + "s", missileBtnX, missileBtnY + 24, paint);
+        }
         paint.setColor(Color.GRAY);
         float bx = 100, by = getHeight() - 300;
         canvas.drawRect(bx, by, bx+100, by+100, paint);
         canvas.drawRect(bx, by+200, bx+100, by+100+200, paint);
         canvas.drawRect(bx-100, by+100, bx, by+200, paint);
         canvas.drawRect(bx+100, by+100, bx+200, by+200, paint);
-
-        long now = System.currentTimeMillis();
-        boolean skillReady = now > playerSkillCDUntil;
-        paint.setColor(skillReady ? Color.rgb(80,200,255) : Color.DKGRAY);
-        canvas.drawCircle(skillBtnX, skillBtnY, skillBtnR, paint);
-        paint.setColor(Color.WHITE);
-        paint.setTextSize(40);
-        paint.setTextAlign(Paint.Align.CENTER);
-        canvas.drawText("SKILL", skillBtnX, skillBtnY+15, paint);
-        if (!skillReady) {
-            long msLeft = playerSkillCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(36);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", skillBtnX, skillBtnY + 60, paint);
-        }
-
-        boolean jumpReady = now > playerJumpCDUntil;
-        paint.setColor(jumpReady ? Color.rgb(255,210,80) : Color.DKGRAY);
-        canvas.drawCircle(jumpBtnX, jumpBtnY, jumpBtnR, paint);
-        paint.setColor(Color.BLACK);
-        paint.setTextSize(38);
-        canvas.drawText("LOMPAT", jumpBtnX, jumpBtnY+15, paint);
-        if (!jumpReady) {
-            long msLeft = playerJumpCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(36);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", jumpBtnX, jumpBtnY + 60, paint);
-        }
     }
 
     @Override
@@ -597,9 +736,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
 
             float dx2 = x - jumpBtnX, dy2 = y - jumpBtnY;
             jumpButtonPressed = (dx2*dx2 + dy2*dy2 <= jumpBtnR*jumpBtnR);
+
+            float dx3 = x - explodeBtnX, dy3 = y - explodeBtnY;
+            explodeButtonPressed = (dx3*dx3 + dy3*dy3 <= explodeBtnR*explodeBtnR);
+
+            float dx4 = x - missileBtnX, dy4 = y - missileBtnY;
+            missileButtonPressed = (dx4*dx4 + dy4*dy4 <= missileBtnR*missileBtnR);
         } else if (event.getAction() == MotionEvent.ACTION_UP) {
             skillButtonPressed = false;
             jumpButtonPressed = false;
+            explodeButtonPressed = false;
+            missileButtonPressed = false;
         }
         return true;
     }
