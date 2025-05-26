@@ -1,155 +1,535 @@
-package com.example.rpgblock;
+package com.example.blockblast;
 
-import android.app.Activity;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Paint.Style;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
+import java.util.ArrayList;
 import java.util.Random;
 
-public class GameView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
+public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callback, Runnable {
+
+    // Map and view
+    private static final int MAP_W = 5000, MAP_H = 5000;
+    private static final int BLOCK = 64;
+    private static final int NPC_COUNT = 40;
+    private static final int TURRET_COUNT = 20;
+
+    // --- PLAYER/NPC CONFIGURABLE ---
+    public static int PLAYER_HP = 3500;
+    public static int NPC_HP = 3000;
+    public static int PLAYER_DMG = 80;
+    public static int NPC_DMG = 80;
+    // --- END CONFIGURABLE ---
+
+    private static final int MISSILE_STUN = 1000;
+    private static final int MISSILE_KNOCKBACK = 140;
+    private static final int TURRET_FIRE_INTERVAL_FAST = 1000;
+    private static final int TURRET_FIRE_INTERVAL_SLOW = 3000;
+    private static final int TURRET_HP_LOW = 2020;
+    private static final int TURRET_HP_HIGH = 5050;
+    private static final float TURRET_RANGE = 1200f;
+    private static final float UNIT_MISSILE_RANGE = 500f;
+    private static final int ATTACK_CD = 3000;
+    private static final int NPC_COLOR = Color.rgb(255,200,100);
+
+    // Summoned minion config
+    private static final int MINION_HP = 580;
+    private static final int MINION_SIZE = 44;
+    private static final int MINION_SPAWN_INTERVAL = 10000; // 10 detik
+    private static final int MINION_DMG = 80;
+    private static final int MINION_RANGE = 520;
+    private static final int MINION_AOE_RADIUS = 100;
+    private static final int MINION_KNOCKBACK = 200;
+    private static final int MINION_SPEED = 18;
+    private static final int MINION_ATTACK_CD = 3000; // 5 detik
+
+    // Turret death stun
+    private static final float TURRET_DEATH_STUN_RADIUS = 0 * BLOCK;
+    private static final int TURRET_DEATH_STUN_MS = 0;
+
+    // Mega Turret & Skill
+    private static final int MEGA_TURRET_SIZE = 320;
+    private static final int MEGA_TURRET_HP = 8000;
+    private static final int MEGA_MISSILE_COOLDOWN = 20000; // ms
+    private static final int MEGA_MISSILE_DMG = 400;
+    private static final int MEGA_MISSILE_SPEED = 30;
+    private static final int MEGA_MISSILE_EXPLODE_RADIUS = 30 * BLOCK; // 20 blok
+    private static final int MEGA_MISSILE_EXPLODE_MIN_DMG = 70;
+    private static final int MEGA_MISSILE_EXPLODE_MAX_DMG = MEGA_MISSILE_DMG;
+    private static final int KELAGIT_BALL_COOLDOWN = 30000; // ms
+    private static final int KELAGIT_BALL_DMG = 400;
+    private static final int KELAGIT_BALL_STUN = 2000;
+    private static final int KELAGIT_BALL_COUNT = 10;
+    private static final int KELAGIT_BALL_RADIUS = 7 * BLOCK;
 
     private Thread thread;
     private boolean running = false;
-
-    private final int mapWidth = 2000;
-    private final int mapHeight = 2000;
-
-    private float cameraX = 0;
-    private float cameraY = 0;
     private int screenW, screenH;
+    private Paint paint = new Paint();
+    private Random rnd = new Random();
 
-    private float playerX = 100, playerY = 100;
-    private final int blockSize = 100;
-    private final Paint paint = new Paint();
-    private boolean upPressed, downPressed, leftPressed, rightPressed;
-    private float playerKnockbackX = 0, playerKnockbackY = 0;
-    private int playerHP = 200;
-    private int playerMaxHP = 200;
-    private long playerLastHitTime = 0;
-    private long playerStunUntil = 0;
+    // Camera
+    private float camX = 0, camY = 0;
 
-    // Skill charge
-    private boolean playerSkillActive = false;
-    private float playerSkillDirX = 0, playerSkillDirY = 0;
-    private int playerSkillTarget = -1;
-    private long playerSkillCDUntil = 0;
+    private class Unit {
+        float x, y, vx, vy;
+        int color, hp, maxHp, damage;
+        boolean isPlayer, isStunned;
+        long stunEnd = 0;
+        long lastAttack = 0;
+        long lastMissile = 0;
+        Object attackTarget = null; // Turret, Minion, MegaTurret
+        Unit(float x, float y, int color, boolean isPlayer) {
+            this.x = x; this.y = y; this.color = color; this.isPlayer = isPlayer;
+            if (isPlayer) {
+                this.hp = PLAYER_HP;
+                this.maxHp = PLAYER_HP;
+                this.damage = PLAYER_DMG;
+            } else {
+                this.hp = NPC_HP;
+                this.maxHp = NPC_HP;
+                this.damage = NPC_DMG;
+            }
+            this.vx = 0; this.vy = 0;
+            this.isStunned = false;
+        }
+        void update() {
+            if (isStunned && SystemClock.uptimeMillis() < stunEnd) return;
+            if (isStunned) isStunned = false;
+            x += vx;
+            y += vy;
+            if (x < 0) x = 0;
+            if (y < 0) y = 0;
+            if (x > MAP_W-BLOCK) x = MAP_W-BLOCK;
+            if (y > MAP_H-BLOCK) y = MAP_H-BLOCK;
+        }
+        boolean canAttack() {
+            return SystemClock.uptimeMillis() - lastAttack > ATTACK_CD;
+        }
+        void setAttacked() {
+            lastAttack = SystemClock.uptimeMillis();
+        }
+        boolean canMissile() {
+            return SystemClock.uptimeMillis() - lastMissile > ATTACK_CD;
+        }
+        void fireMissile() {
+            lastMissile = SystemClock.uptimeMillis();
+        }
+        boolean isInStunRadius(float cx, float cy, float radius) {
+            float dx = (x + BLOCK/2) - cx;
+            float dy = (y + BLOCK/2) - cy;
+            return dx*dx + dy*dy <= radius*radius;
+        }
+    }
+    private Unit player;
+    private ArrayList<Unit> npcs = new ArrayList<>();
 
-    // Skill jump
-    private boolean playerJumpActive = false;
-    private float playerJumpTargetX = 0, playerJumpTargetY = 0;
-    private long playerJumpCDUntil = 0;
-    private static final long JUMP_CD = 60000;
-    private static final float JUMP_RANGE = 650f;
-    private static final float JUMP_AOE = 5 * 100f;
-    private static final long JUMP_STUN = 2000;
+    private class Turret {
+        float x, y;
+        int hp, maxHp;
+        long lastFire;
+        long lastMinion = 0;
+        int fireInterval;
+        int missileSpeed;
+        boolean alive = true;
+        boolean stunnedDeath = false;
+        Turret(float x, float y, int hp, int fireInterval, int missileSpeed) {
+            this.x = x; this.y = y;
+            this.hp = this.maxHp = hp;
+            this.lastFire = SystemClock.uptimeMillis();
+            this.lastMinion = SystemClock.uptimeMillis();
+            this.fireInterval = fireInterval;
+            this.missileSpeed = missileSpeed;
+        }
+        boolean canBeAttacked() {
+            return alive && hp > 0;
+        }
+    }
+    private ArrayList<Turret> turrets = new ArrayList<>();
 
-    private long playerShadowUntil = 0;
+    private class Minion {
+        float x, y, vx, vy;
+        int hp, maxHp;
+        long lastAttack = 0;
+        Object target;
+        boolean active = true;
+        Minion(float x, float y) {
+            this.x = x; this.y = y;
+            this.hp = this.maxHp = MINION_HP;
+        }
+        void update() {
+            if (hp <= 0) { active = false; return; }
+            float nearestDist = 999999f;
+            Object nearest = null;
+            if (player.hp > 0) {
+                float d = dist2(x, y, player.x + BLOCK / 2, player.y + BLOCK / 2);
+                if (d < nearestDist) { nearestDist = d; nearest = player; }
+            }
+            for (Unit npc : npcs) {
+                if (npc.hp <= 0) continue;
+                float d = dist2(x, y, npc.x + BLOCK / 2, npc.y + BLOCK / 2);
+                if (d < nearestDist) { nearestDist = d; nearest = npc; }
+            }
+            target = nearest;
+            if (target != null) {
+                float tx, ty;
+                if (target instanceof Unit) {
+                    Unit tu = (Unit)target;
+                    tx = tu.x + BLOCK/2; ty = tu.y + BLOCK/2;
+                } else {
+                    tx = player.x + BLOCK/2; ty = player.y + BLOCK/2;
+                }
+                float dx = tx - x, dy = ty - y;
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                if (len > MINION_RANGE/2f) {
+                    vx = dx/len * MINION_SPEED;
+                    vy = dy/len * MINION_SPEED;
+                } else {
+                    vx = 0; vy = 0;
+                    long cd = (target == player) ? MINION_ATTACK_CD : 2000;
+                    if (SystemClock.uptimeMillis() - lastAttack > cd) {
+                        areaAttack();
+                        lastAttack = SystemClock.uptimeMillis();
+                    }
+                }
+                x += vx;
+                y += vy;
+                if (x < 0) x = 0;
+                if (y < 0) y = 0;
+                if (x > MAP_W-MINION_SIZE) x = MAP_W-MINION_SIZE;
+                if (y > MAP_H-MINION_SIZE) y = MAP_H-MINION_SIZE;
+            }
+        }
+        void areaAttack() {
+            ArrayList<Unit> victims = new ArrayList<>();
+            if (player.hp > 0) {
+                float d = (float)Math.sqrt(dist2(x, y, player.x + BLOCK/2, player.y + BLOCK/2));
+                if (d < MINION_AOE_RADIUS + BLOCK/2) victims.add(player);
+            }
+            for (Unit npc : npcs) {
+                if (npc.hp <= 0) continue;
+                float d = (float)Math.sqrt(dist2(x, y, npc.x + BLOCK/2, npc.y + BLOCK/2));
+                if (d < MINION_AOE_RADIUS + BLOCK/2) victims.add(npc);
+            }
+            for (Unit victim : victims) {
+                victim.hp -= MINION_DMG;
+                if (victim.hp < 0) victim.hp = 0;
+                victim.isStunned = true;
+                victim.stunEnd = SystemClock.uptimeMillis() + 600;
+                float dx = victim.x + BLOCK/2 - x, dy = victim.y + BLOCK/2 - y;
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                if (len > 0) {
+                    dx /= len; dy /= len;
+                    victim.x += dx * MINION_KNOCKBACK;
+                    victim.y += dy * MINION_KNOCKBACK;
+                    if (victim.x < 0) victim.x = 0;
+                    if (victim.y < 0) victim.y = 0;
+                    if (victim.x > MAP_W-BLOCK) victim.x = MAP_W-BLOCK;
+                    if (victim.y > MAP_H-BLOCK) victim.y = MAP_H-BLOCK;
+                }
+            }
+        }
+    }
+    private ArrayList<Minion> minions = new ArrayList<>();
 
-    // Skill chain
-    private long playerExplodeCDUntil = 0;
-    private boolean explodeButtonPressed = false;
-    private float explodeBtnX, explodeBtnY, explodeBtnR;
-    private boolean playerChainAttackActive = false;
-    private int playerChainCount = 0;
-    private boolean[] playerChainAttacked = new boolean[21];
-    private static final long EXPLODE_CD = 40000;
-    private static final float EXPLODE_CHAIN_RANGE = 700f;
-    private static final long EXPLODE_CHAIN_STUN = 3000;
-    private static final int EXPLODE_CHAIN_DMG = 10;
-    private static final int EXPLODE_CHAIN_KNOCKBACK = 100;
-    private static final int EXPLODE_CHAIN_REPEAT = 3;
+    private class Missile {
+        float x, y, vx, vy;
+        Object target;
+        boolean active;
+        boolean isFromUnit;
+        Missile(float x, float y, float vx, float vy, Object target, boolean isFromUnit) {
+            this.x = x;
+            this.y = y;
+            this.vx = vx; this.vy = vy;
+            this.target = target;
+            this.active = true;
+            this.isFromUnit = isFromUnit;
+        }
+        void update() {
+            x += vx;
+            y += vy;
+            if (!active) return;
+            if (isFromUnit && target instanceof Minion) {
+                Minion m = (Minion) target;
+                float cx = m.x + MINION_SIZE/2, cy = m.y + MINION_SIZE/2;
+                if (m.hp > 0 && dist2(x, y, cx, cy) < ((MINION_SIZE/2+10)*(MINION_SIZE/2+10))) {
+                    m.hp -= (isPlayerMissile() ? PLAYER_DMG : NPC_DMG);
+                    if (m.hp < 0) m.hp = 0;
+                    this.active = false;
+                }
+            } else if (isFromUnit && (target instanceof Turret)) {
+                Turret t = (Turret) target;
+                if (t.hp > 0 && dist2(x, y, t.x + BLOCK / 2, t.y + BLOCK / 2) < (BLOCK * BLOCK)) {
+                    t.hp -= (isPlayerMissile() ? PLAYER_DMG : NPC_DMG);
+                    if (t.hp < 0) t.hp = 0;
+                    this.active = false;
+                }
+            } else if (isFromUnit && (target instanceof MegaTurret)) {
+                MegaTurret mt = (MegaTurret) target;
+                if (mt.hp > 0 && dist2(x, y, mt.x + MEGA_TURRET_SIZE/2, mt.y + MEGA_TURRET_SIZE/2) < (MEGA_TURRET_SIZE/2)*(MEGA_TURRET_SIZE/2)) {
+                    mt.hp -= (isPlayerMissile() ? PLAYER_DMG : NPC_DMG);
+                    if (mt.hp < 0) mt.hp = 0;
+                    this.active = false;
+                }
+            } else if (!isFromUnit && (target instanceof Unit)) {
+                Unit u = (Unit) target;
+                if (u.hp > 0 && dist2(x, y, u.x + BLOCK / 2, u.y + BLOCK / 2) < (BLOCK * BLOCK)) {
+                    u.hp -= MINION_DMG;
+                    u.isStunned = true;
+                    u.stunEnd = SystemClock.uptimeMillis() + MISSILE_STUN;
+                    float dx = u.x + BLOCK / 2 - x, dy = u.y + BLOCK / 2 - y;
+                    float len = (float)Math.sqrt(dx * dx + dy * dy);
+                    if (len > 0) {
+                        dx /= len; dy /= len;
+                        u.x += dx * MISSILE_KNOCKBACK; u.y += dy * MISSILE_KNOCKBACK;
+                        if (u.x < 0) u.x = 0; if (u.y < 0) u.y = 0;
+                        if (u.x > MAP_W-BLOCK) u.x = MAP_W-BLOCK; if (u.y > MAP_H-BLOCK) u.y = MAP_H-BLOCK;
+                    }
+                    this.active = false;
+                }
+            }
+            if (x < 0 || y < 0 || x > MAP_W || y > MAP_H) active = false;
+        }
+        boolean isPlayerMissile() {
+            // Missile dari player, deteksi dengan target dan kecepatan
+            if (target instanceof Turret || target instanceof Minion || target instanceof MegaTurret) {
+                if (player != null) {
+                    float px = player.x+BLOCK/2, py = player.y+BLOCK/2;
+                    return Math.abs(x-px)<BLOCK*2 && Math.abs(y-py)<BLOCK*2;
+                }
+            }
+            return false;
+        }
+    }
+    private ArrayList<Missile> missiles = new ArrayList<>();
 
-    // Skill missile
-    private long playerMissileCDUntil = 0;
-    private boolean missileButtonPressed = false;
-    private float missileBtnX, missileBtnY, missileBtnR;
-    private boolean missileActive = false;
-    private float missileX, missileY;
-    private int missileTargetIdx = -1;
-    private float missileSpeed = 35f;
-    private boolean missileIsPlayer = true;
-    private static final long MISSILE_CD = 60000;
-    private static final float MISSILE_SEARCH_RANGE = 1500f;
-    private static final int MISSILE_DMG = 20;
-    private static final long MISSILE_STUN = 2000;
+    // --- Tambahan Mega Turret & Skill ---
+    private MegaTurret megaTurret = null;
+    private ArrayList<MegaMissile> megaMissiles = new ArrayList<>();
+    private ArrayList<KelagitBall> kelagitBalls = new ArrayList<>();
 
-    // NPCs
-    private static final int NPC_COUNT = 20;
-    private float[] npcX = new float[NPC_COUNT];
-    private float[] npcY = new float[NPC_COUNT];
-    private float[] npcKnockbackX = new float[NPC_COUNT];
-    private float[] npcKnockbackY = new float[NPC_COUNT];
-    private int[] npcDx = new int[NPC_COUNT];
-    private int[] npcDy = new int[NPC_COUNT];
-    private long[] npcLastDirChange = new long[NPC_COUNT];
-    private int[] npcHP = new int[NPC_COUNT];
-    private int[] npcMaxHP = new int[NPC_COUNT];
-    private int[] npcColors = {Color.BLUE, Color.CYAN, Color.MAGENTA, Color.YELLOW, Color.LTGRAY, Color.RED, Color.GREEN, Color.DKGRAY, Color.WHITE, Color.BLACK};
-    private long[] npcLastHitTime = new long[NPC_COUNT];
-    private boolean[] npcAlive = new boolean[NPC_COUNT];
-    private long[] npcStunUntil = new long[NPC_COUNT];
-    private long[] npcShadowUntil = new long[NPC_COUNT];
+    private class MegaTurret {
+        float x, y;
+        int hp, maxHp;
+        boolean alive = true;
+        long lastMegaMissile = 0;
+        long lastKelagit = 0;
+        MegaTurret(float x, float y) {
+            this.x = x; this.y = y;
+            this.hp = this.maxHp = MEGA_TURRET_HP;
+        }
+    }
+    private class MegaMissile {
+        float x, y, vx, vy;
+        Object target;
+        boolean active = true;
+        boolean exploded = false;
+        long explodeTime = 0;
+        MegaMissile(float x, float y, Object target) {
+            this.x = x; this.y = y; this.target = target;
+            this.explodeTime = 0;
+            updateVelocity();
+        }
+        void updateVelocity() {
+            if (target == null) return;
+            float tx, ty;
+            if (target instanceof Unit) {
+                Unit t = (Unit) target;
+                tx = t.x + BLOCK/2; ty = t.y + BLOCK/2;
+            } else if (target instanceof Minion) {
+                Minion m = (Minion) target;
+                tx = m.x + MINION_SIZE/2; ty = m.y + MINION_SIZE/2;
+            } else if (target instanceof Turret) {
+                Turret t = (Turret) target;
+                tx = t.x + BLOCK/2; ty = t.y + BLOCK/2;
+            } else if (target instanceof MegaTurret) {
+                MegaTurret mt = (MegaTurret) target;
+                tx = mt.x + MEGA_TURRET_SIZE/2; ty = mt.y + MEGA_TURRET_SIZE/2;
+            } else {
+                return;
+            }
+            float dx = tx - x, dy = ty - y;
+            float len = (float)Math.sqrt(dx*dx+dy*dy);
+            if (len > 0) {
+                vx = dx / len * MEGA_MISSILE_SPEED;
+                vy = dy / len * MEGA_MISSILE_SPEED;
+            }
+        }
+        void update() {
+            if (!active) return;
+            if (exploded) {
+                if (SystemClock.uptimeMillis() > explodeTime + 500) {
+                    active = false;
+                }
+                return;
+            }
+            if (target != null) updateVelocity();
+            x += vx; y += vy;
+            boolean hit = false;
+            float tx=0, ty=0;
+            if (target instanceof Unit) {
+                Unit t = (Unit) target;
+                if (t.hp > 0 && dist2(x, y, t.x+BLOCK/2, t.y+BLOCK/2) < BLOCK*BLOCK) {
+                    hit = true; tx = t.x+BLOCK/2; ty = t.y+BLOCK/2;
+                }
+            } else if (target instanceof Minion) {
+                Minion m = (Minion) target;
+                if (m.hp > 0 && dist2(x, y, m.x+MINION_SIZE/2, m.y+MINION_SIZE/2) < (MINION_SIZE/2+10)*(MINION_SIZE/2+10)) {
+                    hit = true; tx = m.x+MINION_SIZE/2; ty = m.y+MINION_SIZE/2;
+                }
+            } else if (target instanceof Turret) {
+                Turret t = (Turret) target;
+                if (t.hp > 0 && dist2(x, y, t.x+BLOCK/2, t.y+BLOCK/2) < BLOCK*BLOCK) {
+                    hit = true; tx = t.x+BLOCK/2; ty = t.y+BLOCK/2;
+                }
+            } else if (target instanceof MegaTurret) {
+                MegaTurret mt = (MegaTurret) target;
+                if (mt.hp > 0 && dist2(x, y, mt.x+MEGA_TURRET_SIZE/2, mt.y+MEGA_TURRET_SIZE/2) < (MEGA_TURRET_SIZE/2)*(MEGA_TURRET_SIZE/2)) {
+                    hit = true; tx = mt.x+MEGA_TURRET_SIZE/2; ty = mt.y+MEGA_TURRET_SIZE/2;
+                }
+            }
+            if (hit) {
+                explodeTime = SystemClock.uptimeMillis();
+                exploded = true;
+                for (Unit u : npcs) {
+                    if (u.hp <= 0) continue;
+                    float dd = (float)Math.sqrt(dist2(tx, ty, u.x+BLOCK/2, u.y+BLOCK/2));
+                    if (dd <= MEGA_MISSILE_EXPLODE_RADIUS) {
+                        int dmg = MEGA_MISSILE_EXPLODE_MAX_DMG - (int)((MEGA_MISSILE_EXPLODE_MAX_DMG - MEGA_MISSILE_EXPLODE_MIN_DMG) * (dd / MEGA_MISSILE_EXPLODE_RADIUS));
+                        u.hp -= dmg;
+                        if (u.hp < 0) u.hp = 0;
+                    }
+                }
+                if (player.hp > 0) {
+                    float dd = (float)Math.sqrt(dist2(tx, ty, player.x+BLOCK/2, player.y+BLOCK/2));
+                    if (dd <= MEGA_MISSILE_EXPLODE_RADIUS) {
+                        int dmg = MEGA_MISSILE_EXPLODE_MAX_DMG - (int)((MEGA_MISSILE_EXPLODE_MAX_DMG - MEGA_MISSILE_EXPLODE_MIN_DMG) * (dd / MEGA_MISSILE_EXPLODE_RADIUS));
+                        player.hp -= dmg;
+                        if (player.hp < 0) player.hp = 0;
+                    }
+                }
+                for (Minion m : minions) {
+                    if (!m.active || m.hp <= 0) continue;
+                    float dd = (float)Math.sqrt(dist2(tx, ty, m.x+MINION_SIZE/2, m.y+MINION_SIZE/2));
+                    if (dd <= MEGA_MISSILE_EXPLODE_RADIUS) {
+                        m.hp -= MEGA_MISSILE_EXPLODE_MIN_DMG;
+                        if (m.hp < 0) m.hp = 0;
+                    }
+                }
+                if (megaTurret != null && megaTurret.alive && megaTurret.hp > 0) {
+                    float dd = (float)Math.sqrt(dist2(tx, ty, megaTurret.x+MEGA_TURRET_SIZE/2, megaTurret.y+MEGA_TURRET_SIZE/2));
+                    if (dd <= MEGA_MISSILE_EXPLODE_RADIUS) {
+                        megaTurret.hp -= MEGA_MISSILE_EXPLODE_MIN_DMG;
+                        if (megaTurret.hp < 0) megaTurret.hp = 0;
+                    }
+                }
+            }
+            if (x < 0 || y < 0 || x > MAP_W || y > MAP_H) active = false;
+        }
+    }
+    private class KelagitBall {
+        float x, y;
+        float vx, vy;
+        Object target;
+        boolean active = true;
+        boolean exploded = false;
+        long explodeTime = 0;
+        KelagitBall(float x, float y, Object target) {
+            this.x = x; this.y = y; this.target = target;
+            explodeTime = 0;
+            if (target != null) {
+                float tx, ty;
+                if (target instanceof Unit) {
+                    Unit t = (Unit) target;
+                    tx = t.x + BLOCK/2; ty = t.y + BLOCK/2;
+                } else if (target instanceof Minion) {
+                    Minion m = (Minion) target;
+                    tx = m.x + MINION_SIZE/2; ty = m.y + MINION_SIZE/2;
+                } else if (target instanceof MegaTurret) {
+                    MegaTurret mt = (MegaTurret) target;
+                    tx = mt.x + MEGA_TURRET_SIZE/2; ty = mt.y + MEGA_TURRET_SIZE/2;
+                } else {
+                    tx = x; ty = y;
+                }
+                float dx = tx-x, dy = ty-y;
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                vx = dx/len*13f; vy = dy/len*13f;
+            }
+        }
+        void update() {
+            if (!active) return;
+            if (exploded) {
+                if (SystemClock.uptimeMillis() > explodeTime + 500) active = false;
+                return;
+            }
+            x += vx; y += vy;
+            boolean hit = false;
+            float tx=0, ty=0;
+            if (target instanceof Unit) {
+                Unit t = (Unit) target;
+                if (t.hp > 0 && dist2(x, y, t.x+BLOCK/2, t.y+BLOCK/2) < BLOCK*BLOCK) {
+                    hit = true; tx = t.x+BLOCK/2; ty = t.y+BLOCK/2;
+                }
+            } else if (target instanceof Minion) {
+                Minion m = (Minion) target;
+                if (m.hp > 0 && dist2(x, y, m.x+MINION_SIZE/2, m.y+MINION_SIZE/2) < (MINION_SIZE/2+10)*(MINION_SIZE/2+10)) {
+                    hit = true; tx = m.x+MINION_SIZE/2; ty = m.y+MINION_SIZE/2;
+                }
+            } else if (target instanceof MegaTurret) {
+                MegaTurret mt = (MegaTurret) target;
+                if (mt.hp > 0 && dist2(x, y, mt.x+MEGA_TURRET_SIZE/2, mt.y+MEGA_TURRET_SIZE/2) < (MEGA_TURRET_SIZE/2)*(MEGA_TURRET_SIZE/2)) {
+                    hit = true; tx = mt.x+MEGA_TURRET_SIZE/2; ty = mt.y+MEGA_TURRET_SIZE/2;
+                }
+            }
+            if (hit) {
+                explodeTime = SystemClock.uptimeMillis();
+                exploded = true;
+                for (Unit u : npcs) {
+                    if (u.hp <= 0) continue;
+                    float dd = (float)Math.sqrt(dist2(tx, ty, u.x+BLOCK/2, u.y+BLOCK/2));
+                    if (dd <= KELAGIT_BALL_RADIUS) {
+                        u.isStunned = true;
+                        u.stunEnd = SystemClock.uptimeMillis() + KELAGIT_BALL_STUN;
+                        u.hp -= KELAGIT_BALL_DMG;
+                        if (u.hp < 0) u.hp = 0;
+                    }
+                }
+                if (player.hp > 0) {
+                    float dd = (float)Math.sqrt(dist2(tx, ty, player.x+BLOCK/2, player.y+BLOCK/2));
+                    if (dd <= KELAGIT_BALL_RADIUS) {
+                        player.isStunned = true;
+                        player.stunEnd = SystemClock.uptimeMillis() + KELAGIT_BALL_STUN;
+                        player.hp -= KELAGIT_BALL_DMG;
+                        if (player.hp < 0) player.hp = 0;
+                    }
+                }
+            }
+            if (x < 0 || y < 0 || x > MAP_W || y > MAP_H) active = false;
+        }
+    }
 
-    // NPC skills
-    private boolean[] npcSkillActive = new boolean[NPC_COUNT];
-    private float[] npcSkillDirX = new float[NPC_COUNT];
-    private float[] npcSkillDirY = new float[NPC_COUNT];
-    private long[] npcSkillCDUntil = new long[NPC_COUNT];
-    private int[] npcSkillTarget = new int[NPC_COUNT];
-
-    private boolean[] npcJumpActive = new boolean[NPC_COUNT];
-    private float[] npcJumpTargetX = new float[NPC_COUNT];
-    private float[] npcJumpTargetY = new float[NPC_COUNT];
-    private long[] npcJumpCDUntil = new long[NPC_COUNT];
-
-    private long[] npcExplodeCDUntil = new long[NPC_COUNT];
-    private boolean[] npcChainAttackActive = new boolean[NPC_COUNT];
-    private int[] npcChainCount = new int[NPC_COUNT];
-    private boolean[][] npcChainAttacked = new boolean[NPC_COUNT][21];
-
-    private long[] npcMissileCDUntil = new long[NPC_COUNT];
-    private boolean[] npcMissileActive = new boolean[NPC_COUNT];
-    private float[] npcMissileX = new float[NPC_COUNT];
-    private float[] npcMissileY = new float[NPC_COUNT];
-    private int[] npcMissileTargetIdx = new int[NPC_COUNT];
-    private boolean[] npcMissileIsPlayerTarget = new boolean[NPC_COUNT];
-
-    private static final long STUN_TIME = 700;
-    private static final long SKILL_CD = 30000;
-    private static final float CHARGE_RANGE = 350f;
-    private static final float CHARGE_SPEED = 60f;
-    private static final long HIT_COOLDOWN = 300;
-
-    private final Random random = new Random();
-
-    private boolean skillButtonPressed = false;
-    private float skillBtnX, skillBtnY, skillBtnR;
-
-    private boolean jumpButtonPressed = false;
-    private float jumpBtnX, jumpBtnY, jumpBtnR;
-
-    private Activity activity;
-
-    public GameView(Context context) {
+    public RPGBlockGameView(Context context) {
         super(context);
-        if (context instanceof Activity) activity = (Activity) context;
         getHolder().addCallback(this);
         setFocusable(true);
 
+        player = new Unit(200, MAP_H/2, Color.rgb(80,180,255), true);
         for (int i = 0; i < NPC_COUNT; i++) {
-            npcX[i] = 300 + (i % 5) * 300;
-            npcY[i] = 300 + (i / 5) * 300;
-            npcHP[i] = 100;
-            npcMaxHP[i] = 100;
-            npcAlive[i] = true;
-            npcSkillTarget[i] = -1;
-            npcShadowUntil[i] = 0;
+            npcs.add(new Unit(rnd.nextInt(MAP_W-2*BLOCK)+BLOCK, rnd.nextInt(MAP_H-2*BLOCK)+BLOCK, NPC_COLOR, false));
+        }
+        for (int i = 0; i < TURRET_COUNT; i++) {
+            int t_hp = rnd.nextBoolean() ? TURRET_HP_HIGH : TURRET_HP_LOW;
+            int t_fire = rnd.nextBoolean() ? TURRET_FIRE_INTERVAL_FAST : TURRET_FIRE_INTERVAL_SLOW;
+            int t_speed = rnd.nextBoolean() ? 12 : 19;
+            float tx = rnd.nextInt(MAP_W-BLOCK*2) + BLOCK;
+            float ty = rnd.nextInt(MAP_H/2-BLOCK*2) + BLOCK;
+            turrets.add(new Turret(tx, ty, t_hp, t_fire, t_speed));
         }
     }
 
@@ -159,6 +539,13 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
         thread = new Thread(this);
         thread.start();
     }
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        running = false;
+        try { thread.join(); } catch (InterruptedException e) {}
+    }
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
 
     @Override
     public void run() {
@@ -167,593 +554,397 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback, Run
             try {
                 canvas = getHolder().lockCanvas();
                 if (canvas != null) {
-                    if (screenW == 0 || screenH == 0) {
-                        screenW = canvas.getWidth();
-                        screenH = canvas.getHeight();
-                        skillBtnR = 70;
-                        skillBtnX = screenW - skillBtnR - 30;
-                        skillBtnY = 30 + skillBtnR;
-                        jumpBtnR = 60;
-                        jumpBtnX = screenW - jumpBtnR - 30;
-                        jumpBtnY = skillBtnY + skillBtnR + 30 + jumpBtnR;
-                        explodeBtnR = 55;
-                        explodeBtnX = screenW - explodeBtnR - 30;
-                        explodeBtnY = jumpBtnY + jumpBtnR + 30 + explodeBtnR;
-                        missileBtnR = 55;
-                        missileBtnX = screenW - missileBtnR - 30;
-                        missileBtnY = explodeBtnY + explodeBtnR + 30 + missileBtnR;
-                    }
-                    update();
+                    screenW = canvas.getWidth();
+                    screenH = canvas.getHeight();
+                    updateGame();
                     drawGame(canvas);
                 }
             } finally {
                 if (canvas != null) getHolder().unlockCanvasAndPost(canvas);
             }
-            try { Thread.sleep(16); } catch (InterruptedException e) {}
+            try { Thread.sleep(20); } catch (InterruptedException e) {}
         }
     }
 
-    private void update() {
-        int speed = 20;
-        boolean playerMoving = false;
-        long now = System.currentTimeMillis();
+    private void updateGame() {
+        player.update();
+        camX = player.x + BLOCK/2 - screenW/2;
+        camY = player.y + BLOCK/2 - screenH/2;
+        if (camX < 0) camX = 0;
+        if (camY < 0) camY = 0;
+        if (camX > MAP_W - screenW) camX = MAP_W - screenW;
+        if (camY > MAP_H - screenH) camY = MAP_H - screenH;
 
-        // PLAYER: Movement, stun, skill charge/jump/chain/missile
-        if (now < playerStunUntil) {
-            // Stun
-        } else if (playerSkillActive) {
-            playerX += playerSkillDirX * CHARGE_SPEED;
-            playerY += playerSkillDirY * CHARGE_SPEED;
-            int i = playerSkillTarget;
-            if (i >= 0 && i < NPC_COUNT && npcAlive[i] && checkOverlap(playerX, playerY, npcX[i], npcY[i])) {
-                npcHP[i] -= 3;
-                npcStunUntil[i] = now + STUN_TIME;
-                if (npcHP[i] <= 0) npcAlive[i] = false;
-                playerSkillCDUntil = now + SKILL_CD;
-                playerSkillActive = false;
-                playerSkillTarget = -1;
-            }
-        } else if (playerJumpActive) {
-            playerX = playerJumpTargetX;
-            playerY = playerJumpTargetY;
-            for (int i = 0; i < NPC_COUNT; i++) {
-                if (!npcAlive[i]) continue;
-                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist <= JUMP_AOE) {
-                    npcHP[i] -= 15;
-                    npcStunUntil[i] = now + JUMP_STUN;
-                    float kx = dx / (dist == 0 ? 1 : dist);
-                    float ky = dy / (dist == 0 ? 1 : dist);
-                    float strength = 60;
-                    npcKnockbackX[i] += kx * strength;
-                    npcKnockbackY[i] += ky * strength;
-                    if (npcHP[i] <= 0) npcAlive[i] = false;
-                }
-            }
-            playerJumpCDUntil = now + JUMP_CD;
-            playerJumpActive = false;
-        } else if (playerChainAttackActive) {
-            int nextIdx = getClosestNpcIdx(playerX, playerY, playerChainAttacked);
-            if (nextIdx != -1) {
-                float dx = npcX[nextIdx] - playerX, dy = npcY[nextIdx] - playerY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                float nearDist = blockSize * 1.2f;
-                playerX = npcX[nextIdx] - (dx / (dist == 0 ? 1 : dist)) * nearDist;
-                playerY = npcY[nextIdx] - (dy / (dist == 0 ? 1 : dist)) * nearDist;
-                npcHP[nextIdx] -= EXPLODE_CHAIN_DMG;
-                npcStunUntil[nextIdx] = now + EXPLODE_CHAIN_STUN;
-                npcKnockbackX[nextIdx] += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                npcKnockbackY[nextIdx] += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                npcShadowUntil[nextIdx] = now + 600;
-                if (npcHP[nextIdx] <= 0) npcAlive[nextIdx] = false;
-                playerShadowUntil = now + 600;
-                playerChainAttacked[nextIdx] = true;
-                playerChainCount++;
-            }
-            if (nextIdx == -1 || playerChainCount >= EXPLODE_CHAIN_REPEAT) {
-                playerChainAttackActive = false;
-            }
-        } else {
-            if (upPressed)   { playerY -= speed; playerMoving = true; }
-            if (downPressed) { playerY += speed; playerMoving = true; }
-            if (leftPressed) { playerX -= speed; playerMoving = true; }
-            if (rightPressed){ playerX += speed; playerMoving = true; }
-        }
+        // NPC & Player: target objek terdekat (turret/minion/mega turret)
+        ArrayList<Object> attackables = new ArrayList<>();
+        for (Turret t : turrets) if (t.hp > 0) attackables.add(t);
+        for (Minion m : minions) if (m.active && m.hp > 0) attackables.add(m);
+        if (megaTurret != null && megaTurret.alive && megaTurret.hp > 0) attackables.add(megaTurret);
 
-        playerX = Math.max(0, Math.min(playerX, mapWidth - blockSize));
-        playerY = Math.max(0, Math.min(playerY, mapHeight - blockSize));
-
-        // PLAYER MISSILE
-        if (missileButtonPressed && now > playerMissileCDUntil && !missileActive) {
-            float bestDist = Float.MAX_VALUE;
-            int bestIdx = -1;
-            for (int i = 0; i < NPC_COUNT; i++) {
-                if (!npcAlive[i]) continue;
-                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist < bestDist && dist < MISSILE_SEARCH_RANGE) {
-                    bestDist = dist; bestIdx = i;
-                }
-            }
-            if (bestIdx != -1) {
-                missileActive = true;
-                missileX = playerX + blockSize/2f;
-                missileY = playerY + blockSize/2f;
-                missileTargetIdx = bestIdx;
-                missileIsPlayer = true;
-                playerMissileCDUntil = now + MISSILE_CD;
-            }
-            missileButtonPressed = false;
-        }
-        if (missileActive && missileTargetIdx != -1 && missileIsPlayer) {
-            if (missileTargetIdx >= 0 && missileTargetIdx < NPC_COUNT && npcAlive[missileTargetIdx]) {
-                float tx = npcX[missileTargetIdx] + blockSize/2f;
-                float ty = npcY[missileTargetIdx] + blockSize/2f;
-                float dx = tx - missileX, dy = ty - missileY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist > 10) {
-                    float vx = dx / dist * missileSpeed;
-                    float vy = dy / dist * missileSpeed;
-                    missileX += vx;
-                    missileY += vy;
-                }
-                if (dist < blockSize/1.5f) {
-                    npcHP[missileTargetIdx] -= MISSILE_DMG;
-                    npcStunUntil[missileTargetIdx] = now + MISSILE_STUN;
-                    if (npcHP[missileTargetIdx] <= 0) npcAlive[missileTargetIdx] = false;
-                    missileActive = false;
-                }
-            } else {
-                missileActive = false;
-            }
-        }
-
-        // ================= NPC =================
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (!npcAlive[i]) continue;
-
-            // NPC missile
-            if (!npcMissileActive[i] && now > npcMissileCDUntil[i]) {
-                boolean targetPlayer = false;
-                int bestIdx = -1;
-                float bestDist = Float.MAX_VALUE;
-                float dxp = playerX - npcX[i], dyp = playerY - npcY[i];
-                float distp = (float)Math.sqrt(dxp*dxp + dyp*dyp);
-                if (playerHP > 0 && distp < MISSILE_SEARCH_RANGE) { bestDist = distp; targetPlayer = true; }
-                for (int j = 0; j < NPC_COUNT; j++) {
-                    if (j == i || !npcAlive[j]) continue;
-                    float dx2 = npcX[j] - npcX[i], dy2 = npcY[j] - npcY[i];
-                    float dist2 = (float)Math.sqrt(dx2*dx2 + dy2*dy2);
-                    if (dist2 < bestDist && dist2 < MISSILE_SEARCH_RANGE) {
-                        bestDist = dist2;
-                        targetPlayer = false;
-                        bestIdx = j;
-                    }
-                }
-                if (targetPlayer || bestIdx != -1) {
-                    npcMissileActive[i] = true;
-                    npcMissileX[i] = npcX[i] + blockSize/2f;
-                    npcMissileY[i] = npcY[i] + blockSize/2f;
-                    npcMissileTargetIdx[i] = targetPlayer ? -1 : bestIdx;
-                    npcMissileIsPlayerTarget[i] = targetPlayer;
-                    npcMissileCDUntil[i] = now + MISSILE_CD;
-                }
-            }
-            if (npcMissileActive[i]) {
-                float tx, ty;
-                if (npcMissileIsPlayerTarget[i]) {
-                    tx = playerX + blockSize/2f; ty = playerY + blockSize/2f;
-                } else if (npcMissileTargetIdx[i] >= 0 && npcMissileTargetIdx[i] < NPC_COUNT && npcAlive[npcMissileTargetIdx[i]]) {
-                    tx = npcX[npcMissileTargetIdx[i]] + blockSize/2f; ty = npcY[npcMissileTargetIdx[i]] + blockSize/2f;
+        // NPC
+        for (Unit npc : npcs) {
+            if (npc.hp <= 0) continue;
+            Object nearestObj = null;
+            float nearestDist = Float.MAX_VALUE;
+            float cx = npc.x + BLOCK/2, cy = npc.y + BLOCK/2;
+            for (Object obj : attackables) {
+                float ox, oy;
+                if (obj instanceof Turret) {
+                    Turret t = (Turret) obj;
+                    ox = t.x + BLOCK/2; oy = t.y + BLOCK/2;
+                } else if (obj instanceof MegaTurret) {
+                    MegaTurret mt = (MegaTurret) obj;
+                    ox = mt.x + MEGA_TURRET_SIZE/2; oy = mt.y + MEGA_TURRET_SIZE/2;
                 } else {
-                    npcMissileActive[i] = false;
-					continue;
+                    Minion m = (Minion) obj;
+                    ox = m.x + MINION_SIZE/2; oy = m.y + MINION_SIZE/2;
                 }
-                if (npcMissileActive[i]) {
-                    float dx = tx - npcMissileX[i], dy = ty - npcMissileY[i];
-                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                    if (dist > 10) {
-                        float vx = dx / dist * missileSpeed;
-                        float vy = dy / dist * missileSpeed;
-                        npcMissileX[i] += vx;
-                        npcMissileY[i] += vy;
+                float d = dist2(cx, cy, ox, oy);
+                if (d < nearestDist) { nearestDist = d; nearestObj = obj; }
+            }
+            npc.attackTarget = nearestObj;
+
+            boolean evade = false;
+            for (Missile m : missiles) {
+                if (!m.active || m.isFromUnit) continue;
+                float dx = m.x - (npc.x + BLOCK/2);
+                float dy = m.y - (npc.y + BLOCK/2);
+                float dist = (float)Math.sqrt(dx*dx + dy*dy);
+                float missileDirX = m.vx, missileDirY = m.vy;
+                float dot = dx * missileDirX + dy * missileDirY;
+                if (dist < 100 && dot < 0) {
+                    float perpX = -missileDirY;
+                    float perpY = missileDirX;
+                    float len = (float)Math.sqrt(perpX*perpX + perpY*perpY);
+                    if (len > 0) {
+                        perpX /= len; perpY /= len;
+                        npc.vx = perpX * 7;
+                        npc.vy = perpY * 7;
+                        evade = true;
+                        break;
                     }
-                    if (dist < blockSize/1.5f) {
-                        if (npcMissileIsPlayerTarget[i]) {
-                            playerHP -= MISSILE_DMG;
-                            playerStunUntil = now + MISSILE_STUN;
-                        } else {
-                            npcHP[npcMissileTargetIdx[i]] -= MISSILE_DMG;
-                            npcStunUntil[npcMissileTargetIdx[i]] = now + MISSILE_STUN;
-                            if (npcHP[npcMissileTargetIdx[i]] <= 0) npcAlive[npcMissileTargetIdx[i]] = false;
+                }
+            }
+            if (!evade && nearestObj != null && !npc.isStunned) {
+                float ox, oy;
+                if (nearestObj instanceof Turret) {
+                    Turret t = (Turret) nearestObj;
+                    ox = t.x + BLOCK/2; oy = t.y + BLOCK/2;
+                } else if (nearestObj instanceof MegaTurret) {
+                    MegaTurret mt = (MegaTurret) nearestObj;
+                    ox = mt.x + MEGA_TURRET_SIZE/2; oy = mt.y + MEGA_TURRET_SIZE/2;
+                } else {
+                    Minion m = (Minion) nearestObj;
+                    ox = m.x + MINION_SIZE/2; oy = m.y + MINION_SIZE/2;
+                }
+                float dx = ox - cx, dy = oy - cy;
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                if (len > UNIT_MISSILE_RANGE) {
+                    npc.vx = dx / len * 4.1f;
+                    npc.vy = dy / len * 4.1f;
+                } else {
+                    npc.vx = 0; npc.vy = 0;
+                    if (npc.canMissile()) {
+                        float ms = 16;
+                        missiles.add(new Missile(cx, cy, dx/len*ms, dy/len*ms, nearestObj, true));
+                        npc.fireMissile();
+                    }
+                }
+            }
+            npc.update();
+            if (npc.isStunned && SystemClock.uptimeMillis() < npc.stunEnd) {
+                npc.vx = 0; npc.vy = 0;
+            }
+        }
+
+        // Mega Turret INIT
+        if (megaTurret == null)
+            megaTurret = new MegaTurret(MAP_W / 2 - MEGA_TURRET_SIZE / 2, 100);
+
+        // Mega Turret Skill 1: Mega Missile
+        if (megaTurret.alive && megaTurret.hp > 0 && SystemClock.uptimeMillis() - megaTurret.lastMegaMissile > MEGA_MISSILE_COOLDOWN) {
+            Object farthest = null;
+            float farDist = -1;
+            float mx = megaTurret.x + MEGA_TURRET_SIZE/2, my = megaTurret.y + MEGA_TURRET_SIZE/2;
+            if (player.hp > 0) {
+                float d = dist2(mx, my, player.x + BLOCK/2, player.y + BLOCK/2);
+                if (d > farDist) { farDist = d; farthest = player; }
+            }
+            for (Unit npc : npcs) {
+                if (npc.hp <= 0) continue;
+                float d = dist2(mx, my, npc.x + BLOCK/2, npc.y + BLOCK/2);
+                if (d > farDist) { farDist = d; farthest = npc; }
+            }
+            for (Minion minion : minions) {
+                if (!minion.active || minion.hp <= 0) continue;
+                float d = dist2(mx, my, minion.x + MINION_SIZE/2, minion.y + MINION_SIZE/2);
+                if (d > farDist) { farDist = d; farthest = minion; }
+            }
+            if (farthest != null) {
+                megaMissiles.add(new MegaMissile(mx, my, farthest));
+                megaTurret.lastMegaMissile = SystemClock.uptimeMillis();
+            }
+        }
+        // Mega Turret Skill 2: Bola Kelagit
+        if (megaTurret.alive && megaTurret.hp > 0 && SystemClock.uptimeMillis() - megaTurret.lastKelagit > KELAGIT_BALL_COOLDOWN) {
+            ArrayList<Object> candidates = new ArrayList<>();
+            if (player.hp > 0) candidates.add(player);
+            for (Unit npc : npcs) if (npc.hp > 0) candidates.add(npc);
+            for (Minion m : minions) if (m.active && m.hp > 0) candidates.add(m);
+            Random r = new Random();
+            for (int i = 0; i < KELAGIT_BALL_COUNT; i++) {
+                if (candidates.size() == 0) break;
+                Object target = candidates.get(r.nextInt(candidates.size()));
+                kelagitBalls.add(new KelagitBall(megaTurret.x + MEGA_TURRET_SIZE/2, megaTurret.y + MEGA_TURRET_SIZE/2, target));
+            }
+            megaTurret.lastKelagit = SystemClock.uptimeMillis();
+        }
+        // Update MegaMissile
+        ArrayList<MegaMissile> rmMega = new ArrayList<>();
+        for (MegaMissile m : megaMissiles) {
+            m.update();
+            if (!m.active) rmMega.add(m);
+        }
+        megaMissiles.removeAll(rmMega);
+        // Update KelagitBall
+        ArrayList<KelagitBall> rmKelagit = new ArrayList<>();
+        for (KelagitBall b : kelagitBalls) {
+            b.update();
+            if (!b.active) rmKelagit.add(b);
+        }
+        kelagitBalls.removeAll(rmKelagit);
+
+        // Minion System
+        long now = SystemClock.uptimeMillis();
+        for (Turret turret : turrets) {
+            if (!turret.alive || turret.hp <= 0) continue;
+            if (now - turret.lastMinion > MINION_SPAWN_INTERVAL) {
+                minions.add(new Minion(turret.x + BLOCK/2 - MINION_SIZE/2, turret.y + BLOCK/2 - MINION_SIZE/2));
+                turret.lastMinion = now;
+            }
+        }
+        ArrayList<Minion> deadMinions = new ArrayList<>();
+        for (Minion minion : minions) {
+            if (!minion.active) { deadMinions.add(minion); continue; }
+            minion.update();
+        }
+        minions.removeAll(deadMinions);
+
+        // Player: attack objek terdekat (turret/minion/mega turret)
+        Object nearestObj = null;
+        float nearestDist = Float.MAX_VALUE;
+        float cx = player.x + BLOCK/2, cy = player.y + BLOCK/2;
+        for (Object obj : attackables) {
+            float ox, oy;
+            if (obj instanceof Turret) {
+                Turret t = (Turret) obj;
+                ox = t.x + BLOCK/2; oy = t.y + BLOCK/2;
+            } else if (obj instanceof MegaTurret) {
+                MegaTurret mt = (MegaTurret) obj;
+                ox = mt.x + MEGA_TURRET_SIZE/2; oy = mt.y + MEGA_TURRET_SIZE/2;
+            } else {
+                Minion m = (Minion) obj;
+                ox = m.x + MINION_SIZE/2; oy = m.y + MINION_SIZE/2;
+            }
+            float d = dist2(cx, cy, ox, oy);
+            if (d < nearestDist) { nearestDist = d; nearestObj = obj; }
+        }
+        player.attackTarget = nearestObj;
+        if (nearestObj != null && nearestDist < UNIT_MISSILE_RANGE*UNIT_MISSILE_RANGE) {
+            if (player.canMissile()) {
+                float ox, oy;
+                if (nearestObj instanceof Turret) {
+                    Turret t = (Turret) nearestObj;
+                    ox = t.x + BLOCK/2; oy = t.y + BLOCK/2;
+                } else if (nearestObj instanceof MegaTurret) {
+                    MegaTurret mt = (MegaTurret) nearestObj;
+                    ox = mt.x + MEGA_TURRET_SIZE/2; oy = mt.y + MEGA_TURRET_SIZE/2;
+                } else {
+                    Minion m = (Minion) nearestObj;
+                    ox = m.x + MINION_SIZE/2; oy = m.y + MINION_SIZE/2;
+                }
+                float dx = ox - cx, dy = oy - cy;
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                float ms = 18;
+                missiles.add(new Missile(cx, cy, dx/len*ms, dy/len*ms, nearestObj, true));
+                player.fireMissile();
+            }
+        }
+
+        // Update missiles
+        ArrayList<Missile> toRemove = new ArrayList<>();
+        for (Missile m : missiles) {
+            if (m.active) m.update();
+            else toRemove.add(m);
+        }
+        missiles.removeAll(toRemove);
+
+        // Turrets fire ke unit terdekat
+        for (Turret turret : turrets) {
+            if (!turret.alive || turret.hp <= 0) {
+                if (!turret.stunnedDeath) {
+                    turret.stunnedDeath = true;
+                    float tx = turret.x + BLOCK/2, ty = turret.y + BLOCK/2;
+                    if (player.hp > 0 && player.isInStunRadius(tx, ty, 100*BLOCK)) {
+                        player.isStunned = true;
+                        player.stunEnd = SystemClock.uptimeMillis() + TURRET_DEATH_STUN_MS;
+                    }
+                    for (Unit npc : npcs) {
+                        if (npc.hp > 0 && npc.isInStunRadius(tx, ty, 100*BLOCK)) {
+                            npc.isStunned = true;
+                            npc.stunEnd = SystemClock.uptimeMillis() + TURRET_DEATH_STUN_MS;
                         }
-                        npcMissileActive[i] = false;
                     }
                 }
+                continue;
             }
-
-            // NPC chain attack
-            if (npcChainAttackActive[i]) {
-                int nextIdx = getClosestNpcIdx(npcX[i], npcY[i], npcChainAttacked[i], i);
-                if (nextIdx == NPC_COUNT) {
-                    float dx = playerX - npcX[i], dy = playerY - npcY[i];
-                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                    float nearDist = blockSize * 1.2f;
-                    npcX[i] = playerX - (dx / (dist == 0 ? 1 : dist)) * nearDist;
-                    npcY[i] = playerY - (dy / (dist == 0 ? 1 : dist)) * nearDist;
-                    playerHP -= EXPLODE_CHAIN_DMG;
-                    playerStunUntil = now + EXPLODE_CHAIN_STUN;
-                    playerKnockbackX += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                    playerKnockbackY += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                    playerShadowUntil = now + 600;
-                    npcChainAttacked[i][NPC_COUNT] = true;
-                    npcChainCount[i]++;
-                } else if (nextIdx != -1) {
-                    float dx = npcX[nextIdx] - npcX[i], dy = npcY[nextIdx] - npcY[i];
-                    float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                    float nearDist = blockSize * 1.2f;
-                    npcX[i] = npcX[nextIdx] - (dx / (dist == 0 ? 1 : dist)) * nearDist;
-                    npcY[i] = npcY[nextIdx] - (dy / (dist == 0 ? 1 : dist)) * nearDist;
-                    npcHP[nextIdx] -= EXPLODE_CHAIN_DMG;
-                    npcStunUntil[nextIdx] = now + EXPLODE_CHAIN_STUN;
-                    npcKnockbackX[nextIdx] += (dx / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                    npcKnockbackY[nextIdx] += (dy / (dist == 0 ? 1 : dist)) * EXPLODE_CHAIN_KNOCKBACK;
-                    npcShadowUntil[nextIdx] = now + 600;
-                    if (npcHP[nextIdx] <= 0) npcAlive[nextIdx] = false;
-                    npcChainAttacked[i][nextIdx] = true;
-                    npcChainCount[i]++;
-                }
-                if ((nextIdx == -1 || npcChainCount[i] >= EXPLODE_CHAIN_REPEAT)) {
-                    npcChainAttackActive[i] = false;
-                }
-            }
-
-            // NPC stun
-            if (now < npcStunUntil[i]) {
-                npcDx[i] = 0; npcDy[i] = 0;
-            } else {
-                // === Movement/AI Logic: Cegah saling menumpuk ===
-                float bestDist = Float.MAX_VALUE;
-                float tx = -1, ty = -1;
-                boolean isPlayer = false;
-                float dxp = playerX - npcX[i], dyp = playerY - npcY[i];
-                float distp = (float)Math.sqrt(dxp*dxp + dyp*dyp);
-                if (distp < bestDist && playerHP > 0) {
-                    bestDist = distp; tx = playerX; ty = playerY; isPlayer = true;
-                }
-                for (int j = 0; j < NPC_COUNT; j++) {
-                    if (j == i || !npcAlive[j]) continue;
-                    float dxn = npcX[j] - npcX[i], dyn = npcY[j] - npcY[i];
-                    float distn = (float)Math.sqrt(dxn*dxn + dyn*dyn);
-                    // Jangan mendekat terlalu dekat dengan NPC lain (anti merge/menumpuk)
-                    if (distn < blockSize * 0.95f) {
-                        float nx = (npcX[i] - npcX[j]) / (distn == 0 ? 1 : distn);
-                        float ny = (npcY[i] - npcY[j]) / (distn == 0 ? 1 : distn);
-                        npcX[i] += nx * 6.5f;
-                        npcY[i] += ny * 6.5f;
-                    }
-                    if (distn < bestDist) {
-                        bestDist = distn; tx = npcX[j]; ty = npcY[j]; isPlayer = false;
-                    }
-                }
-                if (bestDist < 600 && now > npcStunUntil[i]) {
-                    float dx = tx - npcX[i], dy = ty - npcY[i];
-                    if (Math.abs(dx) > 20) npcDx[i] = (int)Math.signum(dx);
-                    else npcDx[i] = 0;
-                    if (Math.abs(dy) > 20) npcDy[i] = (int)Math.signum(dy);
-                    else npcDy[i] = 0;
-                } else {
-                    if (now - npcLastDirChange[i] > 1000) {
-                        int[] dirs = {-1, 0, 1};
-                        npcDx[i] = dirs[random.nextInt(3)];
-                        npcDy[i] = dirs[random.nextInt(3)];
-                        npcLastDirChange[i] = now;
-                    }
-                }
-                npcX[i] += npcDx[i] * 5;
-                npcY[i] += npcDy[i] * 5;
-                npcX[i] = Math.max(0, Math.min(npcX[i], mapWidth - blockSize));
-                npcY[i] = Math.max(0, Math.min(npcY[i], mapHeight - blockSize));
-            }
-        }
-
-        // Chain attack NPC trigger
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (!npcAlive[i]) continue;
-            if (!npcChainAttackActive[i] && now > npcExplodeCDUntil[i] && now > npcStunUntil[i]) {
-                boolean adaTargetDekat = false;
-                float dx = playerX - npcX[i], dy = playerY - npcY[i];
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (npcAlive[i] && playerHP > 0 && dist <= EXPLODE_CHAIN_RANGE) adaTargetDekat = true;
-                for (int j = 0; j < NPC_COUNT; j++) {
-                    if (j == i || !npcAlive[j]) continue;
-                    float dx2 = npcX[j] - npcX[i], dy2 = npcY[j] - npcY[i];
-                    float dist2 = (float)Math.sqrt(dx2*dx2 + dy2*dy2);
-                    if (dist2 <= EXPLODE_CHAIN_RANGE) { adaTargetDekat = true; break; }
-                }
-                if (adaTargetDekat && random.nextFloat() < 0.01f) {
-                    for (int j = 0; j <= NPC_COUNT; j++) npcChainAttacked[i][j] = false;
-                    npcChainAttackActive[i] = true;
-                    npcChainCount[i] = 0;
-                    npcExplodeCDUntil[i] = now + EXPLODE_CD;
-                    npcHP[i] -= 10;
-                }
-            }
-        }
-
-        // Skill charge/jump/chain trigger
-        if (skillButtonPressed && !playerSkillActive && now > playerSkillCDUntil && now > playerStunUntil && !playerJumpActive) {
-            for (int i = 0; i < NPC_COUNT; i++) {
-                if (!npcAlive[i]) continue;
-                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist < CHARGE_RANGE) {
-                    playerSkillDirX = dx / dist;
-                    playerSkillDirY = dy / dist;
-                    playerSkillActive = true;
-                    playerSkillTarget = i;
-                    break;
-                }
-            }
-        }
-        if (jumpButtonPressed && !playerJumpActive && now > playerJumpCDUntil && now > playerStunUntil && !playerSkillActive) {
+            Unit nearest = null;
             float bestDist = Float.MAX_VALUE;
-            float tx = playerX, ty = playerY;
-            for (int i = 0; i < NPC_COUNT; i++) {
-                if (!npcAlive[i]) continue;
-                float dx = npcX[i] - playerX, dy = npcY[i] - playerY;
-                float dist = (float)Math.sqrt(dx*dx + dy*dy);
-                if (dist < JUMP_RANGE && dist < bestDist) {
-                    bestDist = dist;
-                    tx = npcX[i];
-                    ty = npcY[i];
+            ArrayList<Unit> units = new ArrayList<>();
+            if (player.hp > 0) units.add(player);
+            for (Unit npc : npcs) if (npc.hp > 0) units.add(npc);
+            for (Unit u : units) {
+                float d = dist2(turret.x+BLOCK/2, turret.y+BLOCK/2, u.x+BLOCK/2, u.y+BLOCK/2);
+                if (d < bestDist && d < TURRET_RANGE*TURRET_RANGE) {
+                    bestDist = d;
+                    nearest = u;
                 }
             }
-            if (bestDist == Float.MAX_VALUE) {
-                tx = playerX + JUMP_RANGE;
-                ty = playerY;
-                tx = Math.max(0, Math.min(tx, mapWidth - blockSize));
-                ty = Math.max(0, Math.min(ty, mapHeight - blockSize));
-            }
-            playerJumpTargetX = tx;
-            playerJumpTargetY = ty;
-            playerJumpActive = true;
-        }
-        if (explodeButtonPressed && now > playerExplodeCDUntil && now > playerStunUntil) {
-            for (int i = 0; i <= NPC_COUNT; i++) playerChainAttacked[i] = false;
-            playerChainAttackActive = true;
-            playerChainCount = 0;
-            playerHP -= 10;
-            playerExplodeCDUntil = now + EXPLODE_CD;
-            explodeButtonPressed = false;
-        }
-
-        cameraX = playerX + blockSize/2 - screenW/2;
-        cameraY = playerY + blockSize/2 - screenH/2;
-        cameraX = Math.max(0, Math.min(cameraX, mapWidth - screenW));
-        cameraY = Math.max(0, Math.min(cameraY, mapHeight - screenH));
-
-        if (playerHP <= 0) {
-            running = false;
-            if (activity != null) {
-                activity.runOnUiThread(new Runnable() {
-						@Override public void run() { activity.finish(); }
-					});
+            if (nearest != null && SystemClock.uptimeMillis() - turret.lastFire > turret.fireInterval) {
+                float dx = nearest.x+BLOCK/2 - (turret.x+BLOCK/2), dy = nearest.y+BLOCK/2 - (turret.y+BLOCK/2);
+                float len = (float)Math.sqrt(dx*dx+dy*dy);
+                float mspeed = turret.missileSpeed;
+                missiles.add(new Missile(turret.x+BLOCK/2, turret.y+BLOCK/2, dx/len*mspeed, dy/len*mspeed, nearest, false));
+                turret.lastFire = SystemClock.uptimeMillis();
             }
         }
-    }
-
-    // Helper functions: getClosestNpcIdx, checkOverlap, dorongUnit (implementasi tetap)
-
-    private int getClosestNpcIdx(float x, float y, boolean[] sudah, int ignoreIdx) {
-        float bestDist = Float.MAX_VALUE;
-        int bestIdx = -1;
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (i == ignoreIdx || sudah[i] || !npcAlive[i]) continue;
-            float dx = npcX[i] - x, dy = npcY[i] - y;
-            float dist = (float)Math.sqrt(dx*dx + dy*dy);
-            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) {
-                bestDist = dist; bestIdx = i;
-            }
-        }
-        if (!sudah[NPC_COUNT]) {
-            float dx = playerX - x, dy = playerY - y;
-            float dist = (float)Math.sqrt(dx*dx + dy*dy);
-            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) return NPC_COUNT;
-        }
-        return bestIdx;
-    }
-    private int getClosestNpcIdx(float x, float y, boolean[] sudah) {
-        float bestDist = Float.MAX_VALUE;
-        int bestIdx = -1;
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (sudah[i] || !npcAlive[i]) continue;
-            float dx = npcX[i] - x, dy = npcY[i] - y;
-            float dist = (float)Math.sqrt(dx*dx + dy*dy);
-            if (dist < bestDist && dist < EXPLODE_CHAIN_RANGE) {
-                bestDist = dist; bestIdx = i;
-            }
-        }
-        return bestIdx;
-    }
-    private boolean checkOverlap(float x1, float y1, float x2, float y2) {
-        return x1 < x2 + blockSize && x1 + blockSize > x2 &&
-			y1 < y2 + blockSize && y1 + blockSize > y2;
     }
 
     private void drawGame(Canvas canvas) {
-        canvas.drawColor(Color.BLACK);
+        canvas.drawColor(Color.rgb(200,220,255));
+        canvas.save();
+        canvas.translate(-camX, -camY);
 
-        paint.setColor(Color.DKGRAY);
-        int gridGap = blockSize;
-        for (int x = 0; x < mapWidth; x += gridGap) {
-            for (int y = 0; y < mapHeight; y += gridGap) {
-                float gx = x - cameraX, gy = y - cameraY;
-                canvas.drawRect(gx, gy, gx + blockSize - 2, gy + blockSize - 2, paint);
-            }
-        }
-
-        int aliveCount = 0;
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (!npcAlive[i]) continue;
-            aliveCount++;
-            if (System.currentTimeMillis() < npcShadowUntil[i]) {
-                paint.setColor(Color.BLACK);
-                paint.setStyle(Style.FILL);
-                float drawX = npcX[i] - cameraX, drawY = npcY[i] - cameraY;
-                canvas.drawRect(drawX+6, drawY+12, drawX+blockSize+6, drawY+blockSize+12, paint);
-            }
-            paint.setStyle(Style.FILL);
-            paint.setColor(npcColors[i % npcColors.length]);
-            float drawX = npcX[i] - cameraX, drawY = npcY[i] - cameraY;
-            canvas.drawRect(drawX, drawY, drawX + blockSize, drawY + blockSize, paint);
-            float hpBarWidth = blockSize * ((float)npcHP[i] / npcMaxHP[i]);
-            hpBarWidth = Math.max(0, Math.min(blockSize, hpBarWidth));
-            paint.setColor(Color.RED);
-            canvas.drawRect(drawX, drawY - 20, drawX + hpBarWidth, drawY - 10, paint);
-            if (System.currentTimeMillis() < npcStunUntil[i]) {
-                paint.setColor(Color.WHITE);
-                canvas.drawRect(drawX, drawY, drawX + blockSize, drawY + blockSize, paint);
-            }
-        }
-
-        paint.setColor(Color.GREEN);
-        float pDrawX = playerX - cameraX, pDrawY = playerY - cameraY;
-        if (System.currentTimeMillis() < playerShadowUntil) {
+        // --- Draw Mega Turret ---
+        if (megaTurret != null && megaTurret.alive && megaTurret.hp > 0) {
+            paint.setColor(Color.rgb(180, 50, 220));
+            canvas.drawRect(megaTurret.x, megaTurret.y, megaTurret.x+MEGA_TURRET_SIZE, megaTurret.y+MEGA_TURRET_SIZE, paint);
             paint.setColor(Color.BLACK);
-            canvas.drawRect(pDrawX+6, pDrawY+12, pDrawX + blockSize+6, pDrawY + blockSize+12, paint);
+            canvas.drawRect(megaTurret.x, megaTurret.y, megaTurret.x+MEGA_TURRET_SIZE, megaTurret.y+MEGA_TURRET_SIZE, paint);
+            paint.setColor(Color.RED);
+            float hpw = megaTurret.hp * MEGA_TURRET_SIZE / (float)megaTurret.maxHp;
+            canvas.drawRect(megaTurret.x, megaTurret.y-16, megaTurret.x+hpw, megaTurret.y-8, paint);
         }
-        paint.setColor(Color.GREEN);
-        canvas.drawRect(pDrawX, pDrawY, pDrawX + blockSize, pDrawY + blockSize, paint);
-        float playerHpBarWidth = blockSize * ((float)playerHP / playerMaxHP);
-        playerHpBarWidth = Math.max(0, Math.min(blockSize, playerHpBarWidth));
-        paint.setColor(Color.RED);
-        canvas.drawRect(pDrawX, pDrawY - 20, pDrawX + playerHpBarWidth, pDrawY - 10, paint);
-        if (System.currentTimeMillis() < playerStunUntil) {
-            paint.setColor(Color.WHITE);
-            canvas.drawRect(pDrawX, pDrawY, pDrawX + blockSize, pDrawY + blockSize, paint);
-        }
-
-        // Draw missile player
-        if (missileActive) {
-            paint.setColor(Color.rgb(180,220,255));
-            canvas.drawRect(missileX - 18 - cameraX, missileY - 8 - cameraY, missileX + 18 - cameraX, missileY + 8 - cameraY, paint);
-        }
-        // Draw missile NPC
-        for (int i = 0; i < NPC_COUNT; i++) {
-            if (npcMissileActive[i]) {
-                paint.setColor(Color.rgb(255,180,60));
-                canvas.drawRect(npcMissileX[i] - 18 - cameraX, npcMissileY[i] - 8 - cameraY, npcMissileX[i] + 18 - cameraX, npcMissileY[i] + 8 - cameraY, paint);
+        // --- Draw Mega Missiles ---
+        for (MegaMissile m : megaMissiles) {
+            if (!m.active) continue;
+            paint.setColor(Color.MAGENTA);
+            canvas.drawCircle(m.x, m.y, 24, paint);
+            if (m.exploded) {
+                paint.setColor(Color.argb(80,255,0,200));
+                canvas.drawCircle(m.x, m.y, MEGA_MISSILE_EXPLODE_RADIUS, paint);
             }
         }
+        // --- Draw Kelagit Balls ---
+        for (KelagitBall b : kelagitBalls) {
+            if (!b.active) continue;
+            paint.setColor(Color.BLUE);
+            canvas.drawCircle(b.x, b.y, 16, paint);
+            if (b.exploded) {
+                paint.setColor(Color.argb(60,80,80,255));
+                canvas.drawCircle(b.x, b.y, KELAGIT_BALL_RADIUS, paint);
+            }
+        }
+        for (Turret turret : turrets) {
+            if (!turret.alive || turret.hp <= 0) continue;
+            paint.setColor(Color.rgb(160,60,60));
+            canvas.drawRect(turret.x, turret.y, turret.x+BLOCK, turret.y+BLOCK, paint);
+            paint.setColor(Color.DKGRAY);
+            canvas.drawRect(turret.x+16, turret.y+8, turret.x+BLOCK-16, turret.y+BLOCK-8, paint);
+            paint.setColor(Color.BLACK);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(4);
+            canvas.drawRect(turret.x, turret.y, turret.x+BLOCK, turret.y+BLOCK, paint);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setStrokeWidth(1);
+            paint.setColor(Color.RED);
+            float hpw = turret.hp * BLOCK / (float)turret.maxHp;
+            canvas.drawRect(turret.x, turret.y-16, turret.x+hpw, turret.y-8, paint);
+        }
 
-        paint.setColor(Color.WHITE);
-        paint.setTextSize(44);
-        paint.setTextAlign(Paint.Align.LEFT);
-        canvas.drawText("NPC Alive: " + aliveCount, 32, 56, paint);
+        for (Minion minion : minions) {
+            if (!minion.active) continue;
+            paint.setColor(Color.rgb(60, 220, 120));
+            canvas.drawRect(minion.x, minion.y, minion.x+MINION_SIZE, minion.y+MINION_SIZE, paint);
+            paint.setColor(Color.RED);
+            canvas.drawRect(minion.x, minion.y-7, minion.x+MINION_SIZE*minion.hp/(float)minion.maxHp, minion.y-3, paint);
+            paint.setColor(Color.argb(50, 60, 220, 120));
+            canvas.drawCircle(minion.x+MINION_SIZE/2, minion.y+MINION_SIZE/2, MINION_AOE_RADIUS, paint);
+        }
 
-        drawButtons(canvas);
+        for (Unit npc : npcs) {
+            if (npc.hp <= 0) continue;
+            paint.setColor(npc.color);
+            canvas.drawRect(npc.x, npc.y, npc.x+BLOCK, npc.y+BLOCK, paint);
+            if (npc.isStunned) {
+                paint.setColor(Color.YELLOW);
+                canvas.drawRect(npc.x, npc.y, npc.x+BLOCK, npc.y+8, paint);
+            }
+            paint.setColor(Color.RED);
+            canvas.drawRect(npc.x, npc.y-10, npc.x+BLOCK*npc.hp/(float)npc.maxHp, npc.y-4, paint);
+        }
+        if (player.hp > 0) {
+            paint.setColor(player.color);
+            canvas.drawRect(player.x, player.y, player.x+BLOCK, player.y+BLOCK, paint);
+            if (player.isStunned) {
+                paint.setColor(Color.YELLOW);
+                canvas.drawRect(player.x, player.y, player.x+BLOCK, player.y+8, paint);
+            }
+            paint.setColor(Color.RED);
+            canvas.drawRect(player.x, player.y-10, player.x+BLOCK*player.hp/(float)player.maxHp, player.y-4, paint);
+        }
+
+        for(Missile m : missiles) {
+            if (!m.active) continue;
+            paint.setColor(m.isFromUnit ? Color.rgb(60,150,255) : Color.rgb(80,80,80));
+            float dx = m.vx, dy = m.vy;
+            float len = (float)Math.sqrt(dx*dx+dy*dy);
+            if (len == 0) len = 1;
+            dx /= len; dy /= len;
+            float mx = m.x - 16*dx;
+            float my = m.y - 16*dy;
+            float ex = m.x + 24*dx;
+            float ey = m.y + 24*dy;
+            paint.setStrokeWidth(12);
+            canvas.drawLine(mx, my, ex, ey, paint);
+            paint.setStrokeWidth(1);
+        }
+
+        canvas.restore();
     }
 
-    private void drawButtons(Canvas canvas) {
-        long now = System.currentTimeMillis();
-        boolean skillReady = now > playerSkillCDUntil;
-        paint.setColor(skillReady ? Color.rgb(80,200,255) : Color.DKGRAY);
-        canvas.drawCircle(skillBtnX, skillBtnY, skillBtnR, paint);
-        paint.setColor(Color.WHITE);
-        paint.setTextSize(30);
-        paint.setTextAlign(Paint.Align.CENTER);
-        canvas.drawText("CHARGE", skillBtnX, skillBtnY+10, paint);
-        if (!skillReady) {
-            long msLeft = playerSkillCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(22);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", skillBtnX, skillBtnY + 38, paint);
-        }
-        boolean jumpReady = now > playerJumpCDUntil;
-        paint.setColor(jumpReady ? Color.rgb(255,210,80) : Color.DKGRAY);
-        canvas.drawCircle(jumpBtnX, jumpBtnY, jumpBtnR, paint);
-        paint.setColor(Color.BLACK);
-        paint.setTextSize(26);
-        canvas.drawText("LOMPAT", jumpBtnX, jumpBtnY+10, paint);
-        if (!jumpReady) {
-            long msLeft = playerJumpCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(20);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", jumpBtnX, jumpBtnY + 34, paint);
-        }
-        boolean explodeReady = now > playerExplodeCDUntil;
-        paint.setColor(explodeReady ? Color.rgb(255,80,100) : Color.DKGRAY);
-        canvas.drawCircle(explodeBtnX, explodeBtnY, explodeBtnR, paint);
-        paint.setColor(Color.WHITE);
-        paint.setTextSize(20);
-        canvas.drawText("CHAIN", explodeBtnX, explodeBtnY+7, paint);
-        if (!explodeReady) {
-            long msLeft = playerExplodeCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(16);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", explodeBtnX, explodeBtnY + 24, paint);
-        }
-        boolean missileReady = now > playerMissileCDUntil;
-        paint.setColor(missileReady ? Color.rgb(140,180,255) : Color.DKGRAY);
-        canvas.drawCircle(missileBtnX, missileBtnY, missileBtnR, paint);
-        paint.setColor(Color.WHITE);
-        paint.setTextSize(17);
-        canvas.drawText("MISSILE", missileBtnX, missileBtnY+7, paint);
-        if (!missileReady) {
-            long msLeft = playerMissileCDUntil - now;
-            int detik = (int)(msLeft / 1000) + 1;
-            paint.setTextSize(14);
-            paint.setColor(Color.YELLOW);
-            canvas.drawText("" + detik + "s", missileBtnX, missileBtnY + 24, paint);
-        }
-        paint.setColor(Color.GRAY);
-        float bx = 100, by = getHeight() - 300;
-        canvas.drawRect(bx, by, bx+100, by+100, paint);
-        canvas.drawRect(bx, by+200, bx+100, by+100+200, paint);
-        canvas.drawRect(bx-100, by+100, bx, by+200, paint);
-        canvas.drawRect(bx+100, by+100, bx+200, by+200, paint);
+    private float dist2(float x1, float y1, float x2, float y2) {
+        float dx = x1-x2, dy = y1-y2;
+        return dx*dx+dy*dy;
     }
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
-        float x = event.getX(), y = event.getY();
-        float bx = 100, by = getHeight() - 300;
-        boolean pressed = event.getAction() != MotionEvent.ACTION_UP;
-
-        upPressed = pressed && x > bx && x < bx+100 && y > by && y < by+100;
-        downPressed = pressed && x > bx && x < bx+100 && y > by+200 && y < by+300;
-        leftPressed = pressed && x > bx-100 && x < bx && y > by+100 && y < by+200;
-        rightPressed = pressed && x > bx+100 && x < bx+200 && y > by+100 && y < by+200;
-
+        if (player.hp <= 0) return true;
+        if (player.isStunned && SystemClock.uptimeMillis() < player.stunEnd) return true;
         if (event.getAction() == MotionEvent.ACTION_DOWN || event.getAction() == MotionEvent.ACTION_MOVE) {
-            float dx = x - skillBtnX, dy = y - skillBtnY;
-            skillButtonPressed = (dx*dx + dy*dy <= skillBtnR*skillBtnR);
-
-            float dx2 = x - jumpBtnX, dy2 = y - jumpBtnY;
-            jumpButtonPressed = (dx2*dx2 + dy2*dy2 <= jumpBtnR*jumpBtnR);
-
-            float dx3 = x - explodeBtnX, dy3 = y - explodeBtnY;
-            explodeButtonPressed = (dx3*dx3 + dy3*dy3 <= explodeBtnR*explodeBtnR);
-
-            float dx4 = x - missileBtnX, dy4 = y - missileBtnY;
-            missileButtonPressed = (dx4*dx4 + dy4*dy4 <= missileBtnR*missileBtnR);
+            float wx = event.getX() + camX;
+            float wy = event.getY() + camY;
+            float dx = wx - (player.x+BLOCK/2);
+            float dy = wy - (player.y+BLOCK/2);
+            float len = (float)Math.sqrt(dx*dx+dy*dy);
+            if (len > 10) {
+                player.vx = dx/len * 8;
+                player.vy = dy/len * 8;
+            }
         } else if (event.getAction() == MotionEvent.ACTION_UP) {
-            skillButtonPressed = false;
-            jumpButtonPressed = false;
-            explodeButtonPressed = false;
-            missileButtonPressed = false;
+            player.vx = 0; player.vy = 0;
         }
         return true;
-    }
-
-    @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
-    @Override public void surfaceDestroyed(SurfaceHolder holder) {
-        running = false;
-        try { thread.join(); } catch (InterruptedException e) {}
     }
 }
