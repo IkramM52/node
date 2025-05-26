@@ -1,6 +1,7 @@
 package com.example.blockblast;
 
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -74,10 +75,21 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
     private Paint paint = new Paint();
     private Random rnd = new Random();
 
+    // Kontrol tombol virtual
+    private int btnSize = 120;
+    private float btnAlpha = 0.6f;
+    private boolean btnUpPressed, btnDownPressed, btnLeftPressed, btnRightPressed;
+
+    // Kill counter
+    private int killNPC = 0, killTurret = 0, killMinion = 0, killMegaTurret = 0;
+    private boolean gameEnded = false;
+
+
     // Camera
     private float camX = 0, camY = 0;
 
     private class Unit {
+        boolean killedByPlayer = false;
         float x, y, vx, vy;
         int color, hp, maxHp, damage;
         boolean isPlayer, isStunned;
@@ -131,6 +143,7 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
     private ArrayList<Unit> npcs = new ArrayList<>();
 
     private class Turret {
+        boolean killedByPlayer = false;
         float x, y;
         int hp, maxHp;
         long lastFire;
@@ -154,6 +167,7 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
     private ArrayList<Turret> turrets = new ArrayList<>();
 
     private class Minion {
+        boolean killedByPlayer = false;
         float x, y, vx, vy;
         int hp, maxHp;
         long lastAttack = 0;
@@ -523,15 +537,20 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
         for (int i = 0; i < NPC_COUNT; i++) {
             npcs.add(new Unit(rnd.nextInt(MAP_W-2*BLOCK)+BLOCK, rnd.nextInt(MAP_H-2*BLOCK)+BLOCK, NPC_COLOR, false));
         }
-        for (int i = 0; i < TURRET_COUNT; i++) {
-            int t_hp = rnd.nextBoolean() ? TURRET_HP_HIGH : TURRET_HP_LOW;
-            int t_fire = rnd.nextBoolean() ? TURRET_FIRE_INTERVAL_FAST : TURRET_FIRE_INTERVAL_SLOW;
-            int t_speed = rnd.nextBoolean() ? 12 : 19;
-            float tx = rnd.nextInt(MAP_W-BLOCK*2) + BLOCK;
-            float ty = rnd.nextInt(MAP_H/2-BLOCK*2) + BLOCK;
-            turrets.add(new Turret(tx, ty, t_hp, t_fire, t_speed));
-        }
+
+    public RPGBlockGameView(Context context, AttributeSet attrs) {
+        this(context);
     }
+
+	for (int i = 0; i < TURRET_COUNT; i++) {
+		int t_hp = rnd.nextBoolean() ? TURRET_HP_HIGH : TURRET_HP_LOW;
+		int t_fire = rnd.nextBoolean() ? TURRET_FIRE_INTERVAL_FAST : TURRET_FIRE_INTERVAL_SLOW;
+		int t_speed = rnd.nextBoolean() ? 12 : 19;
+		float tx = rnd.nextInt(MAP_W-BLOCK*2) + BLOCK;
+		float ty = rnd.nextInt(MAP_H/2-BLOCK*2) + BLOCK;
+		turrets.add(new Turret(tx, ty, t_hp, t_fire, t_speed));
+	}
+}
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
@@ -655,6 +674,53 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
             if (npc.isStunned && SystemClock.uptimeMillis() < npc.stunEnd) {
                 npc.vx = 0; npc.vy = 0;
             }
+        }
+
+        
+        // --- Cek kill NPC oleh player ---
+        for (Unit npc : npcs) {
+            if (npc.hp <= 0 && !npc.killedByPlayer) {
+                npc.killedByPlayer = true;
+                killNPC++;
+            }
+        }
+        for (Minion minion : minions) {
+            if (!minion.active && !minion.killedByPlayer) {
+                minion.killedByPlayer = true;
+                killMinion++;
+            }
+        }
+        for (Turret turret : turrets) {
+            if (turret.hp <= 0 && !turret.killedByPlayer) {
+                turret.killedByPlayer = true;
+                killTurret++;
+            }
+        }
+        if (megaTurret != null && megaTurret.hp <= 0 && megaTurret.alive) {
+            megaTurret.alive = false;
+            killMegaTurret = 1;
+        }
+
+        // --- Cek Game End ---
+        boolean allTurretDead = true;
+        for (Turret t : turrets) if (t.hp > 0) allTurretDead = false;
+        boolean allMinionDead = true;
+        for (Minion m : minions) if (m.active && m.hp > 0) allMinionDead = false;
+        boolean megaTurretDead = (megaTurret != null && megaTurret.hp <= 0);
+
+        if (!gameEnded && (player.hp <= 0 || (allTurretDead && allMinionDead && megaTurretDead))) {
+            gameEnded = true;
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    Intent intent = new Intent(getContext(), ResultActivity.class);
+                    intent.putExtra("killNPC", killNPC);
+                    intent.putExtra("killTurret", killTurret);
+                    intent.putExtra("killMinion", killMinion);
+                    intent.putExtra("killMegaTurret", killMegaTurret);
+                    getContext().startActivity(intent);
+                }
+            });
         }
 
         // Mega Turret INIT
@@ -825,6 +891,27 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
         canvas.save();
         canvas.translate(-camX, -camY);
 
+        
+        // Tombol virtual WASD
+        paint.setColor(Color.argb((int)(btnAlpha * 255), 120, 120, 120));
+        float margin = 30;
+        float cxBtn = margin + btnSize, cyBtn = screenH - margin - btnSize;
+        paint.setColor(btnUpPressed ? Color.rgb(80,180,255) : Color.argb((int)(btnAlpha*255), 120, 120, 120));
+        canvas.drawCircle(cxBtn, cyBtn-btnSize, btnSize/2, paint);
+        paint.setColor(btnDownPressed ? Color.rgb(80,180,255) : Color.argb((int)(btnAlpha*255), 120, 120, 120));
+        canvas.drawCircle(cxBtn, cyBtn+btnSize, btnSize/2, paint);
+        paint.setColor(btnLeftPressed ? Color.rgb(80,180,255) : Color.argb((int)(btnAlpha*255), 120, 120, 120));
+        canvas.drawCircle(cxBtn-btnSize, cyBtn, btnSize/2, paint);
+        paint.setColor(btnRightPressed ? Color.rgb(80,180,255) : Color.argb((int)(btnAlpha*255), 120, 120, 120));
+        canvas.drawCircle(cxBtn+btnSize, cyBtn, btnSize/2, paint);
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(40);
+        paint.setTextAlign(Paint.Align.CENTER);
+        canvas.drawText("↑", cxBtn, cyBtn-btnSize+18, paint);
+        canvas.drawText("↓", cxBtn, cyBtn+btnSize+18, paint);
+        canvas.drawText("←", cxBtn-btnSize, cyBtn+18, paint);
+        canvas.drawText("→", cxBtn+btnSize, cyBtn+18, paint);
+
         // --- Draw Mega Turret ---
         if (megaTurret != null && megaTurret.alive && megaTurret.hp > 0) {
             paint.setColor(Color.rgb(180, 50, 220));
@@ -923,7 +1010,13 @@ public class RPGBlockGameView extends SurfaceView implements SurfaceHolder.Callb
         canvas.restore();
     }
 
-    private float dist2(float x1, float y1, float x2, float y2) {
+    
+    private float dist(float x1, float y1, float x2, float y2) {
+        float dx = x1-x2, dy = y1-y2;
+        return (float)Math.sqrt(dx*dx+dy*dy);
+    }
+
+private float dist2(float x1, float y1, float x2, float y2) {
         float dx = x1-x2, dy = y1-y2;
         return dx*dx+dy*dy;
     }
